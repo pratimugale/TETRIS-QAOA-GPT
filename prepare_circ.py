@@ -3,7 +3,6 @@ from pathlib import Path
 from tqdm import tqdm
 import json
 import networkx as nx
-from matplotlib import pyplot as plt
 import numpy as np
 from collections import Counter
 import random
@@ -17,8 +16,8 @@ tqdm.pandas()
 # max_abs_param_val = 10
 
 parser = argparse.ArgumentParser(description='Parser for ADAPT GPT circuit preparation.')
-parser.add_argument('--results_fpath_str', type=str, help='Path to read results from')
-parser.add_argument('--save_path_str', type=str, help='Path to save files')
+parser.add_argument('--adapt_results_dir', type=str, help='Path to read results from')
+parser.add_argument('--save_dir', type=str, help='Path to save files')
 parser.add_argument('--rounding_digits', type=int, default=2, help='Number of digits to round to')
 parser.add_argument('--val_frac', type=float, default=0.1, help='Validation fraction')
 parser.add_argument('--approx_ratio_thr', type=float, default=0.98, help='Approximation ratio threshold')
@@ -27,8 +26,8 @@ parser.add_argument('--max_abs_param_val', type=float, default=10, help='Maximum
 # Parse the arguments
 args = parser.parse_args()
 
-results_fpath_str = args.results_fpath_str
-save_path_str = args.save_path_str
+results_fpath_str = args.adapt_results_dir
+save_path_str = args.save_dir
 rounding_digits = args.rounding_digits
 val_frac = args.val_frac
 approx_ratio_thr = args.approx_ratio_thr
@@ -333,6 +332,18 @@ pd.to_pickle(
     meta,
     save_path.joinpath('meta.pkl')
 )
+
+with open('train_adapt_gpt_config_template.py') as f:
+    config_template_str = f.read()
+
+dataset_name = save_path.stem
+config_to_save_str = config_template_str.format(
+    out_dir=f'out-{dataset_name}',
+    dataset=dataset_name
+)
+
+with open(save_path.joinpath('train_adapt_gpt_config.py'), 'w') as f:
+    f.write(config_to_save_str)
 
 print(f"Data is saved to: {str(save_path.absolute())}")
 print("Done!")
