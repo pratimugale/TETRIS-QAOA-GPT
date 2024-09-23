@@ -30,5 +30,5 @@ The pipeline is run as follows:
 	2. Run: `python train.py <SAVING_DIR>/train_adapt_gpt_config.py`
 4. Evaluate the results
 	1. Generate circuits with the trained model. Notebook: `adapt_gpt_gen_py.ipynb`
-	2. Get their energy estimations with ADAPT. For that run: `julia adapt_gpt_eval_energy.jl <input_fpath> <output_fpath> <n_nodes>`
+	2. Get their energy estimations with ADAPT. For that run: `julia --project=ADAPT.jl/ adapt_gpt_eval_energy.jl <input_fpath> <output_fpath> <n_nodes>`
 	3. Visualize results. Notebook: `adapt_gpt_vis_results_py.ipynb` 
