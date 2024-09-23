@@ -20,6 +20,7 @@ parser.add_argument('--adapt_results_dir', type=str, help='Path to read results 
 parser.add_argument('--save_dir', type=str, help='Path to save files')
 parser.add_argument('--rounding_digits', type=int, default=2, help='Number of digits to round to')
 parser.add_argument('--val_frac', type=float, default=0.1, help='Validation fraction')
+parser.add_argument('--test_frac', type=float, default=0.1, help='Test fraction')
 parser.add_argument('--approx_ratio_thr', type=float, default=0.98, help='Approximation ratio threshold')
 parser.add_argument('--max_abs_param_val', type=float, default=10, help='Maximum absolute value of gamma and betta params')
 
@@ -30,6 +31,7 @@ results_fpath_str = args.adapt_results_dir
 save_path_str = args.save_dir
 rounding_digits = args.rounding_digits
 val_frac = args.val_frac
+test_frac = args.test_frac
 approx_ratio_thr = args.approx_ratio_thr
 max_abs_param_val = args.max_abs_param_val
 
@@ -244,6 +246,8 @@ def tokenize_row(row):
         if cur_gamma > -max_abs_param_val and cur_gamma < max_abs_param_val:
             cur_gamma_round = round(cur_gamma, rounding_digits)
             tokens_seq_list.append(cur_gamma_round)
+        else:
+            return None
     
     tokens_seq_list.append('eos')
     
@@ -260,7 +264,6 @@ combined_res_tok_df[f'token_int_seq_round_d{rounding_digits}'] = (
     )
 )
 
-
 # Generating training split for nanoGPT
 
 print("Preparing training data...")
@@ -271,28 +274,40 @@ combined_res_tok_shf_df = (
         .sample(frac=1)
         .reset_index(drop=True)
 )
-train_graph_ids_set = set(
-    combined_res_tok_shf_df['graph_id']
-        .drop_duplicates()
-        .sample(frac=1 - val_frac)
-        .to_list()
-)
 
+graph_ids = combined_res_tok_shf_df['graph_id'].drop_duplicates().to_list()
+
+# Compute the number of graphs for each set
+n_total = len(graph_ids)
+n_test = int(n_total * test_frac)  # Define test_frac for the size of the test set
+n_val = int(n_total * val_frac)  # val_frac defines the validation set size
+n_train = n_total - n_test - n_val  # Remaining will be the training set
+
+# Split into train, val, and test sets
+train_graph_ids_set = set(graph_ids[:n_train])
+val_graph_ids_set = set(graph_ids[n_train:n_train + n_val])
+test_graph_ids_set = set(graph_ids[n_train + n_val:])
+
+assert len(train_graph_ids_set.intersection(val_graph_ids_set)) == 0
+assert len(train_graph_ids_set.intersection(test_graph_ids_set)) == 0
+assert len(val_graph_ids_set.intersection(test_graph_ids_set)) == 0
+
+# Assign the 'label' column based on the split
 combined_res_tok_shf_df['label'] = 'train'
-combined_res_tok_shf_df.loc[
-    ~combined_res_tok_shf_df['graph_id'].isin(train_graph_ids_set),
-    'label'
-] = 'val'
+combined_res_tok_shf_df.loc[combined_res_tok_shf_df['graph_id'].isin(val_graph_ids_set), 'label'] = 'val'
+combined_res_tok_shf_df.loc[combined_res_tok_shf_df['graph_id'].isin(test_graph_ids_set), 'label'] = 'test'
 
-len(train_graph_ids_set)
 train_data = combined_res_tok_shf_df[
     combined_res_tok_shf_df['label'] == 'train'
 ]
 val_data = combined_res_tok_shf_df[
     combined_res_tok_shf_df['label'] == 'val'
 ]
+test_data = combined_res_tok_shf_df[
+    combined_res_tok_shf_df['label'] == 'test'
+]
 
-print(f"\tNumber of training samples: {len(train_data)}, val samples: {len(val_data)}")
+print(f"\tNumber of training samples: {len(train_data)}, val samples: {len(val_data)}, test samples: {len(test_data)}")
 
 train_data_conc = []
 for l in train_data[f'token_int_seq_round_d{rounding_digits}']:
@@ -302,11 +317,17 @@ train_data_conc_np = np.array(train_data_conc, dtype=np.uint16)
 val_data_conc = []
 for l in val_data[f'token_int_seq_round_d{rounding_digits}']:
     val_data_conc += l
-
 val_data_conc_np = np.array(val_data_conc, dtype=np.uint16)
+
+test_data_conc = []
+for l in test_data[f'token_int_seq_round_d{rounding_digits}']:
+    test_data_conc += l
+test_data_conc_np = np.array(test_data_conc, dtype=np.uint16)
+
+
 print(f"\tTrain has {len(train_data_conc_np):,} tokens")
 print(f"\tVal has {len(val_data_conc_np):,} tokens")
-
+print(f"\tTest has {len(test_data_conc_np):,} tokens")
 
 # Saving
 save_path.mkdir(parents=True, exist_ok=True)
@@ -321,6 +342,7 @@ combined_res_tok_shf_df.to_pickle(
 
 train_data_conc_np.tofile(save_path.joinpath('train.bin'))
 val_data_conc_np.tofile(save_path.joinpath('val.bin'))
+test_data_conc_np.tofile(save_path.joinpath('test.bin'))
 
 meta = {
     'vocab_size': vocab_size,
