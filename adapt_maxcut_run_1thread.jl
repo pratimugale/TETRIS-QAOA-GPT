@@ -2,7 +2,7 @@ import Graphs
 import SimpleWeightedGraphs
 import ADAPT
 import PauliOperators: ScaledPauliVector, FixedPhasePauli
-import LinearAlgebra: norm
+import LinearAlgebra: norm, eigen
 import CSV
 import DataFrames
 using JuMP, MQLib
@@ -89,6 +89,11 @@ function parse_commandline()
         arg_type = String
         default = "N/A"
         
+        "--calc_h_eigen"
+        help = "Calculate eigenvalue decomposition (exact)"
+        arg_type = Bool
+        default = false
+        
     end
 
     return parse_args(s)
@@ -119,10 +124,20 @@ weighted = args["weighted"]
 diag_qaoa = args["run-diag-qaoa"]
 degen = args["degen"]
 json_graphs_fname = args["graphs-input-json"]
+calc_h_eigen = args["calc_h_eigen"]
 
 println("Running ADAPT with parameters (worker: $hostname, pid: $pid):")
 for (arg,val) in args
     println("  $arg  =>  $val")
+end
+
+function exact_ground_state_energy(H)
+    # May take a long time!
+    Hm = Matrix(H)
+    E, U = eigen(Hm) # Perform the eigenvalue decomposition
+    ψ0 = U[:, 1]
+    E0 = real(E[1])
+    return E0
 end
 
 function get_weighted_maxcut(g::Graphs.SimpleGraph, rng = _DEFAULT_RNG)
@@ -273,6 +288,8 @@ for graph_num in iter
     
     push!(graphs_df, (graph_num, edgelist_json))
     
+    e_exact_eig = -999.0
+    
     # BUILD OUT THE PROBLEM HAMILTONIAN
     if diag_qaoa
         H_spv = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
@@ -280,6 +297,9 @@ for graph_num in iter
         H = ADAPT.ADAPT_QAOA.QAOAObservable(H_spv)
     else
         H = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
+        if calc_h_eigen
+            e_exact_eig = exact_ground_state_energy(H)
+        end
     end
     
     ##########
@@ -312,7 +332,7 @@ for graph_num in iter
         #ADAPT.Callbacks.Printer(:energy, :selected_index, :selected_score),
         ADAPT.Callbacks.ScoreStopper(1e-3),
         ADAPT.Callbacks.ParameterStopper(max_layers * 2),
-        ADAPT.Callbacks.FloorStopper(energy_tol, exact_energy_val),
+        # ADAPT.Callbacks.FloorStopper(energy_tol, exact_energy_val),
         # ADAPT.Callbacks.SlowStopper(1.0, 3),
         # ADAPT.Callbacks.TimeStopper(soft_time_limit),
     ]
@@ -366,6 +386,7 @@ for graph_num in iter
                     :coeff => ansatz.parameters,
                     :energy => trace[:energy][trace[:adaptation][2:end]],
                     :energy_mqlib => exact_energy_val,
+                    :energy_eigen => e_exact_eig,
                     :took_time => sum(trace[:elapsed_time]),
                     :success_flag => success,
                 )
@@ -427,6 +448,7 @@ for graph_num in iter
                     :coeff => -999.0,
                     :energy => trace[:energy][trace[:adaptation][2:end]],
                     :energy_mqlib => exact_energy_val,
+                    :energy_eigen => e_exact_eig,
                     :took_time => sum(trace[:elapsed_time]),
                     :success_flag => success,
                 )
