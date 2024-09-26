@@ -30,7 +30,7 @@ function parse_commandline()
         default = 10
         
         "--trials-per-graph"
-        help = "Number of times to run degenerate ADAPT per one graph"
+        help = "Number of times to run ADAPT per one graph"
         arg_type = Int
         default = 3
         
@@ -84,6 +84,11 @@ function parse_commandline()
         arg_type = Float64
         default = 0.001
         
+        "--graphs-input-json"
+        help = "Do not generate random graphs, use the provided json file instead to read graphs from"
+        arg_type = String
+        default = "N/A"
+        
     end
 
     return parse_args(s)
@@ -100,13 +105,6 @@ current_datetime = now()
 ts_string = string(Dates.format(current_datetime, "yy-mm-dd__HH_MM"))
 #####
 
-# trials_per_graph = 3
-# graphs_number = 10
-# output_dir = "/lustre/acslab/users/2288/Quantum_stuff/results_darwin/vqe_dataset_parallel_pos_weighted_n10_092024"
-# energy_tol_frac = 0.0001
-# n_nodes = 10
-# max_layers = 30
-
 output_dir = args["output-dir"]
 graphs_number = args["graphs-number"]
 n_nodes = args["n-nodes"]
@@ -120,14 +118,12 @@ energy_tol_frac = args["energy-tol-frac"]
 weighted = args["weighted"]
 diag_qaoa = args["run-diag-qaoa"]
 degen = args["degen"]
+json_graphs_fname = args["graphs-input-json"]
 
 println("Running ADAPT with parameters (worker: $hostname, pid: $pid):")
 for (arg,val) in args
     println("  $arg  =>  $val")
 end
-
-#use_negative_weights=false
-#println("use_negative_weights: ", use_negative_weights)
 
 function get_weighted_maxcut(g::Graphs.SimpleGraph, rng = _DEFAULT_RNG)
     edge_indices = Graphs.edges(g)
@@ -193,7 +189,7 @@ function rand_weigh_graph_generator(n_nodes::Int64, prob::Float64=0.5; weighted:
     return g_weighted
 end
 
-function edgelist_to_graph(edgelist, num_vertices=0)
+function edgelist_to_graph(edgelist; num_vertices=0)
 
     if num_vertices == 0
         num_vertices = maximum(max(src, dst) for (src, dst, w) in edgelist)
@@ -201,7 +197,7 @@ function edgelist_to_graph(edgelist, num_vertices=0)
     g = SimpleWeightedGraphs.SimpleWeightedGraph(num_vertices)
 
     # Add edges with weights to the graph
-    for (src, dst, w) in edge_list
+    for (src, dst, w) in edgelist
         Graphs.add_edge!(g, src, dst, w)
     end
     
@@ -234,31 +230,47 @@ graphs_df = DataFrames.DataFrame(
 
 prob_list = 0.3:0.1:0.9  # List of probabilities from 0.3 to 0.9
 
-# BUILD OUT THE POOL
-pool = ADAPT.ADAPT_QAOA.QAOApools.qaoa_double_pool(n_nodes); pooltype = "qaoa_double_pool"
-#pool = ADAPT.ADAPT_QAOA.QAOApools.qaoa_mixer(n_nodes); pooltype = "qaoa_mixer"
-
-# ANOTHER POOL OPTION
-# pool = ADAPT.Pools.two_local_pool(n_nodes); pooltype = "two_local_pool"
+if json_graphs_fname != "N/A"
+    println("Loading graphs from: $json_graphs_fname")
+    json_graphs_dict = JSON.Parser.parsefile(json_graphs_fname);
+    graphs_number = length(json_graphs_dict)
+    graph_names_list = collect(keys(json_graphs_dict))
+end
 
 iter = ProgressBar(1:graphs_number)
 set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
 #for graph_num in 1:graphs_number
 for graph_num in iter
-
-    prob = Random.rand(prob_list)
-    g = rand_weigh_graph_generator(n_nodes, prob, weighted=weighted, neg_weights=use_negative_weights)
-
-    while Graphs.ne(g) == 0
-        println("Generated empty graph! Trying again")
+    
+    if json_graphs_fname == "N/A"
+        cur_graph_name = "Graph_$graph_num"
+        prob = Random.rand(prob_list)
         g = rand_weigh_graph_generator(n_nodes, prob, weighted=weighted, neg_weights=use_negative_weights)
+
+        while Graphs.ne(g) == 0
+            println("Generated empty graph! Trying again")
+            g = rand_weigh_graph_generator(n_nodes, prob, weighted=weighted, neg_weights=use_negative_weights)
+        end
+    else
+        prob = "N/A"
+        cur_graph_name = graph_names_list[graph_num]
+        cur_graph_elist = json_graphs_dict[cur_graph_name]["elist"]
+        global n_nodes = json_graphs_dict[cur_graph_name]["n_nodes"]
+        g = edgelist_to_graph(cur_graph_elist, num_vertices=n_nodes)
     end
     
-    e_list = graph_to_edgelist(g)
-    
-    edgelist_json = JSON.json(e_list)
+    # BUILD OUT THE POOL
+    pool = ADAPT.ADAPT_QAOA.QAOApools.qaoa_double_pool(n_nodes); pooltype = "qaoa_double_pool"
+    #pool = ADAPT.ADAPT_QAOA.QAOApools.qaoa_mixer(n_nodes); pooltype = "qaoa_mixer"
 
-    println("Number of edges: ", Graphs.ne(g), "; prob: ", prob)
+    # ANOTHER POOL OPTION
+    # pool = ADAPT.Pools.two_local_pool(n_nodes); pooltype = "two_local_pool"
+    
+    e_list = graph_to_edgelist(g)
+    edgelist_json = JSON.json(e_list)
+    
+    println("\nGraph name: $cur_graph_name;\nNumber of edges: $(Graphs.ne(g));\nNumber of nodes: $(Graphs.nv(g));\nProb: $prob.\n")
+    
     push!(graphs_df, (graph_num, edgelist_json))
     
     # BUILD OUT THE PROBLEM HAMILTONIAN
@@ -342,8 +354,10 @@ for graph_num in iter
                #throw(error("hello"))
                cur_res_df = DataFrames.DataFrame(
                     :method => "vqe",
+                    :graph_name => cur_graph_name,
                     :graph_num => graph_num,
                     :run => trial_num,
+                    :n_nodes => n_nodes,
                     :gamma0 => -999.0,
                     :pooltype => pooltype,
                     :generator_index_in_pool => trace[:selected_index][1:end-1], 
@@ -401,8 +415,10 @@ for graph_num in iter
                #throw(error("hello"))
                cur_res_df = DataFrames.DataFrame(
                     :method => "qaoa",
+                    :graph_name => cur_graph_name,
                     :graph_num => graph_num,
                     :run => trial_num,
+                    :n_nodes => n_nodes,
                     :gamma0 => gamma0,
                     :pooltype => pooltype,
                     :generator_index_in_pool => trace[:selected_index][1:end-1], 
@@ -420,21 +436,23 @@ for graph_num in iter
             end
         end
     end
-    
-    H_df = DataFrames.DataFrame(H)
-    H_df[!, :graph_num] .= graph_num
-    append!(hams_df, H_df)
 
-    # WRITE THE HAMILTONIAN TO A FILE
-    ham_file = ""*output_dir*"/hams/n_"*string(n_nodes)*"_worker_"*string(hostname)*"_pid_"*string(pid)*"_ts_"*ts_string*"_Ham.csv"
-    CSV.write(ham_file, hams_df)
+    if json_graphs_fname == "N/A"
+        # DOES NOT WORK IF N_NODES VARIES ACROSS GRAPHS
+        H_df = DataFrames.DataFrame(H)
+        H_df[!, :graph_num] .= graph_num
+        append!(hams_df, H_df)
+        # WRITE THE HAMILTONIAN TO A FILE
+        ham_file = ""*output_dir*"/hams/worker_"*string(hostname)*"_pid_"*string(pid)*"_ts_"*ts_string*"_Ham.csv"
+        CSV.write(ham_file, hams_df)
+    end
     
     # WRITE THE ADAPT-QAOA RESULTS TO A FILE
-    results_file = ""*output_dir*"/res/n_"*string(n_nodes)*"_worker_"*string(hostname)*"_pid_"*string(pid)*"_ts_"*ts_string*"_adapt_qaoa_res.csv"
+    results_file = ""*output_dir*"/res/worker_"*string(hostname)*"_pid_"*string(pid)*"_ts_"*ts_string*"_adapt_qaoa_res.csv"
     CSV.write(results_file, results_df)
     
     # WRITE GRAPHS TO A FILE
-    graphs_file = ""*output_dir*"/graphs/n_"*string(n_nodes)*"_worker_"*string(hostname)*"_pid_"*string(pid)*"_ts_"*ts_string*"_graphs_json.csv"
+    graphs_file = ""*output_dir*"/graphs/worker_"*string(hostname)*"_pid_"*string(pid)*"_ts_"*ts_string*"_graphs_json.csv"
     CSV.write(graphs_file, graphs_df)
     
 end
