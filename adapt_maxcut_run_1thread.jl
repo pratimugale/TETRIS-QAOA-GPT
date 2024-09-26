@@ -58,6 +58,11 @@ function parse_commandline()
         help = "Run ADAPT QAOA"
         arg_type = Bool
         default = true
+
+        "--run-diag-qaoa"
+        help = "Run DiagonalQAOA"
+        arg_type = Bool
+        default = false
         
         "--g0"
         help = "Gamma 0 parameter"
@@ -108,6 +113,7 @@ g0 = args["g0"]
 max_layers = args["max-layers"]
 energy_tol_frac = args["energy-tol-frac"]
 weighted = args["weighted"]
+diag_qaoa = args["run-diag-qaoa"]
 
 println("Running ADAPT with parameters (worker: $hostname, pid: $pid):")
 for (arg,val) in args
@@ -250,7 +256,13 @@ for graph_num in iter
     push!(graphs_df, (graph_num, edgelist_json))
     
     # BUILD OUT THE PROBLEM HAMILTONIAN
-    H = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
+    if diag_qaoa
+        H_spv = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
+        # Wrap in a QAOAObservable view.
+        H = ADAPT.ADAPT_QAOA.QAOAObservable(H_spv)
+    else
+        H = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
+    end
     
     ##########
     # MQLib block
@@ -267,7 +279,9 @@ for graph_num in iter
     # println("Note: in the current ADAPT-QAOA implementation, the observable and generators must have the same type.")
     
     # SELECT THE PROTOCOLS
-    adapt = ADAPT.Degenerate_ADAPT.DEG_ADAPT
+    
+    #adapt = ADAPT.Degenerate_ADAPT.DEG_ADAPT
+    adapt = ADAPT.VANILLA
     vqe = ADAPT.OptimOptimizer(:BFGS; g_tol=1e-4)
     
     # SELECT THE CALLBACKS
@@ -352,13 +366,19 @@ for graph_num in iter
 
             println("For QAOA using gamma_0 = $gamma0, trial: $trial_num")
 
-            ansatz = ADAPT.ADAPT_QAOA.QAOAAnsatz(gamma0, H)  
+            if diag_qaoa
+                ansatz = ADAPT.ADAPT_QAOA.DiagonalQAOAAnsatz(gamma0, pool, H)
+            else
+                ansatz = ADAPT.ADAPT_QAOA.QAOAAnsatz(gamma0, H)
+            end
             #= the first argument is a hyperparameter and can in principle 
             be set to values other than 0.1 =#
             trace = ADAPT.Trace()
 
             # RUN THE ALGORITHM
+            println("RUNNING ADAPT QAOA!!!")
             success = ADAPT.run!(ansatz, trace, adapt, vqe, pool, H, ψ0, callbacks)
+            
             #println(success ? "Success!" : "Failure - optimization didn't converge.")
 
             # # RESULTS
