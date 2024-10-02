@@ -13,6 +13,9 @@ TRIALS_PER_GRAPH=3
 WEIGHTED=true
 #######################################
 
+CUR_DATE=$(date +'%Y-%m-%d_%H-%M')
+LOG_DIR=$OUTPUT_DIR/logs/$CUR_DATE
+mkdir -p $LOG_DIR
 
 ###########################
 # ADAPT Parallel executor # 
@@ -27,6 +30,7 @@ do
         --weighted $WEIGHTED \
         --run-qaoa true \
         --run-vqe false \
-        &
+        2>&1 | tee $LOG_DIR/worker_out_$HOSTNAME.log \
+        & 
 done
 wait
