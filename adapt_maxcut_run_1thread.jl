@@ -1,7 +1,7 @@
 import Graphs
 import SimpleWeightedGraphs
 import ADAPT
-import PauliOperators: ScaledPauliVector, FixedPhasePauli
+import PauliOperators: ScaledPauliVector, FixedPhasePauli, KetBitString, SparseKetBasis
 import LinearAlgebra: norm, eigen
 import CSV
 import DataFrames
@@ -131,14 +131,47 @@ for (arg,val) in args
     println("  $arg  =>  $val")
 end
 
-function exact_ground_state_energy(H)
-    # May take a long time!
-    Hm = Matrix(H)
-    E, U = eigen(Hm) # Perform the eigenvalue decomposition
-    ψ0 = U[:, 1]
-    E0 = real(E[1])
+# function exact_ground_state_energy(H)
+#     # May take a long time!
+#     Hm = Matrix(H)
+#     E, U = eigen(Hm) # Perform the eigenvalue decomposition
+#     ψ0 = U[:, 1]
+#     E0 = real(E[1])
+#     return E0
+# end
+
+# module Exact
+#     import ..PauliOperators
+#     import ..H, ..n
+#     Emin = Ref(Inf); ketmin = Ref(PauliOperators.KetBitString{n}(0))
+#     for v in 0:1<<n-1
+#         ket = PauliOperators.KetBitString{n}(v)
+#         vec = PauliOperators.SparseKetBasis{n,ComplexF64}(ket => 1)
+#         Ev = real((H*vec)[ket])
+#         if Ev < Emin[]
+#             Emin[] = Ev
+#             ketmin[] = ket
+#         end
+#     end
+#     ψ0 = Vector(PauliOperators.SparseKetBasis{n,ComplexF64}(ketmin[] => 1))
+#     E0 = Emin[]
+# end
+
+function exact_ground_state_energy(H, n)
+    Emin = Ref(Inf); ketmin = Ref(KetBitString{n}(0))
+    for v in 0:1<<n-1
+        ket = KetBitString{n}(v)
+        vec = SparseKetBasis{n,ComplexF64}(ket => 1)
+        Ev = real((H*vec)[ket])
+        if Ev < Emin[]
+            Emin[] = Ev
+            ketmin[] = ket
+        end
+    end
+    ψ0 = Vector(SparseKetBasis{n,ComplexF64}(ketmin[] => 1))
+    E0 = Emin[]
     return E0
-end
+end 
 
 function get_weighted_maxcut(g::Graphs.SimpleGraph, rng = _DEFAULT_RNG)
     edge_indices = Graphs.edges(g)
@@ -298,7 +331,7 @@ for graph_num in iter
     else
         H = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
         if calc_h_eigen
-            e_exact_eig = exact_ground_state_energy(H)
+            e_exact_eig = exact_ground_state_energy(H, n_nodes)
         end
     end
     
@@ -327,7 +360,7 @@ for graph_num in iter
     
     # SELECT THE CALLBACKS
     callbacks = [
-        ADAPT.Callbacks.Tracer(:energy, :selected_index, :selected_score, :scores, :elapsed_time),
+        ADAPT.Callbacks.Tracer(:energy, :selected_index, :selected_score, :scores, :elapsed_time, :g_norm),
         ADAPT.Callbacks.ParameterTracer(),
         #ADAPT.Callbacks.Printer(:energy, :selected_index, :selected_score),
         ADAPT.Callbacks.ScoreStopper(1e-3),
@@ -385,9 +418,11 @@ for graph_num in iter
                     :γ_coeff => -999.0,
                     :coeff => ansatz.parameters,
                     :energy => trace[:energy][trace[:adaptation][2:end]],
+                    #:energy_bfgs => trace[:energy], # cast to json string 
                     :energy_mqlib => exact_energy_val,
                     :energy_eigen => e_exact_eig,
-                    :took_time => sum(trace[:elapsed_time]),
+                    #:took_time => sum(trace[:elapsed_time]),
+                    :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
                 )
                 append!(results_df, cur_res_df)
@@ -449,7 +484,8 @@ for graph_num in iter
                     :energy => trace[:energy][trace[:adaptation][2:end]],
                     :energy_mqlib => exact_energy_val,
                     :energy_eigen => e_exact_eig,
-                    :took_time => sum(trace[:elapsed_time]),
+                    #:took_time => sum(trace[:elapsed_time]),
+                    :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
                 )
                 append!(results_df, cur_res_df)
