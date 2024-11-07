@@ -2,7 +2,7 @@ import Graphs
 import SimpleWeightedGraphs
 import ADAPT
 import PauliOperators: ScaledPauliVector, FixedPhasePauli, KetBitString, SparseKetBasis
-import LinearAlgebra: norm, eigen
+import LinearAlgebra: norm, eigen, Diagonal
 import CSV
 import DataFrames
 using JuMP, MQLib
@@ -74,8 +74,8 @@ function parse_commandline()
         arg_type = String
         default = "inv"
         
-        "--max-layers"
-        help = "Cut-off value for number of layers in output circuit"
+        "--max-params"
+        help = "Cut-off value for number of parameters in output circuit"
         arg_type = Int
         default = 30
         
@@ -83,6 +83,11 @@ function parse_commandline()
         help = "Energy tolerance fraction for FloorStopper (if used)"
         arg_type = Float64
         default = 0.001
+        
+        "--scaling-coef"
+        help = "Apply scaling to every weight in a graph to speedup convergence"
+        arg_type = Float64
+        default = 1.0
         
         "--graphs-input-json"
         help = "Do not generate random graphs, use the provided json file instead to read graphs from"
@@ -92,7 +97,7 @@ function parse_commandline()
         "--calc_h_eigen"
         help = "Calculate eigenvalue decomposition (exact)"
         arg_type = Bool
-        default = false
+        default = true
         
     end
 
@@ -118,13 +123,14 @@ use_negative_weights = args["use-negative-weights"]
 run_vqe = args["run-vqe"]
 run_qaoa = args["run-qaoa"]
 g0 = args["g0"]
-max_layers = args["max-layers"]
+max_params = args["max-params"]
 energy_tol_frac = args["energy-tol-frac"]
 weighted = args["weighted"]
 diag_qaoa = args["run-diag-qaoa"]
 degen = args["degen"]
 json_graphs_fname = args["graphs-input-json"]
 calc_h_eigen = args["calc_h_eigen"]
+scaling_coef = args["scaling-coef"]
 
 println("Running ADAPT with parameters (worker: $hostname, pid: $pid):")
 for (arg,val) in args
@@ -179,20 +185,37 @@ function get_weighted_maxcut(g::Graphs.SimpleGraph, rng = _DEFAULT_RNG)
     return edge_list
 end
 
+function maxcut_matrix_from_adjacency(A::Matrix{Float64})
+    # Step 1: Compute the Degree matrix D
+    D = Diagonal(sum(A, dims=2)[:])
+    
+    # Step 2: Compute the Laplacian matrix L
+    L = D - A
+    
+    # Step 3: Compute the Max-Cut matrix Q
+    Q = L ./ 2
+    
+    return Q
+end
+
 function get_mqlib_energy_from_adj_m(adj_matrix)
     # MQLib block
     mqlib_model = Model(MQLib.Optimizer)
     MQLib.set_heuristic(mqlib_model, "BURER2002")
-    Q = adj_matrix
+    Q = maxcut_matrix_from_adjacency(adj_matrix)
     n_nodes = size(adj_matrix)[1]
     @variable(mqlib_model, x[1:n_nodes], Bin)
     @objective(mqlib_model, Max, x' * Q * x)
     JuMP.optimize!(mqlib_model)
     maxcut_val_mqlib = JuMP.objective_value(mqlib_model)
     
-    exact_energy_val = -0.5 * maxcut_val_mqlib
+    #exact_energy_val = -0.5 * maxcut_val_mqlib
+    
+    exact_energy_val = -2 * maxcut_val_mqlib
+    
+    solution = JuMP.value.(x)
 
-    return exact_energy_val
+    return solution, exact_energy_val
 end
 
 function graph_to_edgelist(g)
@@ -207,12 +230,33 @@ function graph_to_edgelist(g)
     return weighted_edge_list
 end 
 
+function scale_elist_weights(e_list, coef)
+    # Initialize a new list to store the scaled edges
+    scaled_weighted_edge_list = Vector{Tuple{Int64, Int64, Float64}}()
+
+    # Iterate through each edge in the edge list
+    for (node1, node2, weight) in e_list
+        # Scale the weight by the coefficient
+        scaled_weight = weight * coef
+        
+        # Append the scaled edge to the new list
+        push!(scaled_weighted_edge_list, (node1, node2, scaled_weight))
+    end
+
+    return scaled_weighted_edge_list
+end
+
 function graph_to_adj_m(g)
     adj_matrix = Matrix(SimpleWeightedGraphs.adjacency_matrix(g))
     return adj_matrix
 end 
 
-function rand_weigh_graph_generator(n_nodes::Int64, prob::Float64=0.5; weighted::Bool=true, neg_weights::Bool=true)
+function rand_weigh_graph_generator(
+        n_nodes::Int64,
+        prob::Float64=0.5;
+        weighted::Bool=true,
+        neg_weights::Bool=true
+    )
     
     g = Graphs.erdos_renyi(n_nodes, prob)
 
@@ -320,10 +364,20 @@ for graph_num in iter
     # pool = ADAPT.Pools.two_local_pool(n_nodes); pooltype = "two_local_pool"
     
     e_list = graph_to_edgelist(g)
+    #println(typeof(e_list))
+    
     edgelist_json = JSON.json(e_list)
     
-    println("\nGraph name: $cur_graph_name;\nNumber of edges: $(Graphs.ne(g));\nNumber of nodes: $(Graphs.nv(g));\nProb: $prob.\n")
+    # scaling down the weights
     
+    if scaling_coef != 1.0
+        println("Scaling all edgelist weights with $scaling_coef")
+        e_list = scale_elist_weights(e_list, scaling_coef)
+        #println(e_list)
+        #println(typeof(e_list))
+    end
+    
+    println("\nGraph name: $cur_graph_name;\nNumber of edges: $(Graphs.ne(g));\nNumber of nodes: $(Graphs.nv(g));\nProb: $prob.\n")
     
     e_exact_eig = -999.0
     
@@ -339,6 +393,9 @@ for graph_num in iter
         h_frob_norm = norm(Matrix(H))
         if calc_h_eigen
             e_exact_eig = exact_ground_state_energy(H, n_nodes)
+            if scaling_coef != 1.0
+                e_exact_eig = e_exact_eig / scaling_coef
+            end 
         end
     end
     
@@ -347,11 +404,23 @@ for graph_num in iter
     ##########
     # MQLib block
 
-    exact_energy_val = (
+    exact_cut_solution, exact_energy_val = (
         get_mqlib_energy_from_adj_m(
             graph_to_adj_m(g)
         )
     )
+    
+    exact_cut_solution_string = join(
+        map(
+            x -> x == 1.0 ? "1" : "0",
+            exact_cut_solution
+        )
+    )
+    
+    
+    # if scaling_coef != 1.0
+    #     exact_energy_val = exact_energy_val / scaling_coef
+    # end
     
     energy_tol = abs(energy_tol_frac * exact_energy_val)
 
@@ -366,6 +435,7 @@ for graph_num in iter
         adapt = ADAPT.VANILLA
     end
     vqe = ADAPT.OptimOptimizer(:BFGS; g_tol=1e-4)
+    # g_tol=1e-2
     
     # SELECT THE CALLBACKS
     callbacks = [
@@ -373,7 +443,7 @@ for graph_num in iter
         ADAPT.Callbacks.ParameterTracer(),
         #ADAPT.Callbacks.Printer(:energy, :selected_index, :selected_score),
         ADAPT.Callbacks.ScoreStopper(1e-3),
-        ADAPT.Callbacks.ParameterStopper(max_layers * 2),
+        ADAPT.Callbacks.ParameterStopper(max_params),
         # ADAPT.Callbacks.FloorStopper(energy_tol, exact_energy_val),
         # ADAPT.Callbacks.SlowStopper(1.0, 3),
         # ADAPT.Callbacks.TimeStopper(soft_time_limit),
@@ -404,13 +474,34 @@ for graph_num in iter
 
             # RUN THE ALGORITHM
             success = ADAPT.run!(ansatz, trace, adapt, vqe, pool, H, ψ0, callbacks)
-            #println(success ? "Success!" : "Failure - optimization didn't converge.")
+            println(success ? "Success!" : "Failure - optimization didn't converge.")
+            
 
             # # RESULTS
             # if !success
             #     continue
             # end
-
+            
+            energies_list = trace[:energy][trace[:adaptation][2:end]]
+            if scaling_coef != 1.0
+                energies_scaled_list = energies_list ./ scaling_coef
+            else
+                energies_scaled_list = energies_list
+            end
+            
+            # SAMPLE MOST LIKELY BITSTRING
+            ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
+            ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
+            pmax, imax = findmax(ρ)
+            ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
+            
+            # println("p ", ρ)
+            # println("pmax ", pmax)
+            # println("imax ", imax)
+            println("VQE ketmax:", ketmax)
+            
+            adapt_solution_string = string(ketmax)
+            
             # SAVE THE TRACE
             try
                #throw(error("hello"))
@@ -422,14 +513,17 @@ for graph_num in iter
                     :n_nodes => n_nodes,
                     :gamma0 => -999.0,
                     :pooltype => pooltype,
+                    :edge_weight_scaling_coef => scaling_coef,
                     :generator_index_in_pool => trace[:selected_index][1:end-1], 
                     :β_coeff => -999.0,
                     :γ_coeff => -999.0,
                     :coeff => ansatz.parameters,
-                    :energy => trace[:energy][trace[:adaptation][2:end]],
+                    :energy => energies_scaled_list,
                     #:energy_bfgs => trace[:energy], # cast to json string 
                     :energy_mqlib => exact_energy_val,
                     :energy_eigen => e_exact_eig,
+                    :cut_mqlib => "$exact_cut_solution_string",
+                    :cut_adapt => "$adapt_solution_string",
                     #:took_time => sum(trace[:elapsed_time]),
                     :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
@@ -477,12 +571,31 @@ for graph_num in iter
             #println("RUNNING ADAPT QAOA!!!")
             success = ADAPT.run!(ansatz, trace, adapt, vqe, pool, H, ψ0, callbacks)
             
-            #println(success ? "Success!" : "Failure - optimization didn't converge.")
+            println(success ? "Success!" : "Failure - optimization didn't converge.")
+            
+            #println(keys(trace))
 
             # # RESULTS
             # if !success
             #     continue
             # end
+            
+            energies_list = trace[:energy][trace[:adaptation][2:end]]
+            if scaling_coef != 1.0
+                energies_scaled_list = energies_list ./ scaling_coef
+            else
+                energies_scaled_list = energies_list
+            end
+            
+            # SAMPLE MOST LIKELY BITSTRING
+            ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
+            ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
+            pmax, imax = findmax(ρ)
+            ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
+            
+            println("QAOA ketmax:", ketmax)
+            
+            adapt_solution_string = string(ketmax)
 
             # SAVE THE TRACE
             try
@@ -495,13 +608,16 @@ for graph_num in iter
                     :n_nodes => n_nodes,
                     :gamma0 => gamma0,
                     :pooltype => pooltype,
+                    :edge_weight_scaling_coef => scaling_coef,
                     :generator_index_in_pool => trace[:selected_index][1:end-1], 
                     :β_coeff => ansatz.β_parameters,
                     :γ_coeff => ansatz.γ_parameters,
                     :coeff => -999.0,
-                    :energy => trace[:energy][trace[:adaptation][2:end]],
+                    :energy => energies_scaled_list,
                     :energy_mqlib => exact_energy_val,
                     :energy_eigen => e_exact_eig,
+                    :cut_mqlib => "$exact_cut_solution_string",
+                    :cut_adapt => "$adapt_solution_string",
                     #:took_time => sum(trace[:elapsed_time]),
                     :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
