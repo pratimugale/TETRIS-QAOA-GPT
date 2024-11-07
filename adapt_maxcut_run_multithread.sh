@@ -5,12 +5,13 @@ SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 
 #######################################
 # ADAPT parameters (adjust as needed) #
-N_WORKERS=20
+N_WORKERS=1
 OUTPUT_DIR="<YOUR_DIRECTORY_HERE>"
-GRAPHS_NUMBER=5
-N_NODES=12
+GRAPHS_NUMBER=10
+N_NODES=8
 TRIALS_PER_GRAPH=3
-WEIGHTED=true
+MAX_PARAMS=100
+WEIGHTED=false
 #######################################
 
 CUR_DATE=$(date +'%Y-%m-%d_%H-%M')
@@ -27,9 +28,11 @@ do
         --graphs-number $GRAPHS_NUMBER \
         --n-nodes $N_NODES \
         --trials-per-graph $TRIALS_PER_GRAPH \
+        --max-params $MAX_PARAMS \
         --weighted $WEIGHTED \
         --run-qaoa true \
-        --run-vqe false \
+        --run-vqe true \
+        --calc_h_eigen true \
         2>&1 | tee $LOG_DIR/worker_${HOSTNAME}_${i}.log \
         & 
 done
