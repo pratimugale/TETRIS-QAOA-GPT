@@ -89,6 +89,11 @@ function parse_commandline()
         arg_type = Float64
         default = 1.0
         
+        "--normalize-weights"
+        help = "Apply edge weight normalization to speedup convergence"
+        arg_type = Bool
+        default = false
+        
         "--graphs-input-json"
         help = "Do not generate random graphs, use the provided json file instead to read graphs from"
         arg_type = String
@@ -131,6 +136,7 @@ degen = args["degen"]
 json_graphs_fname = args["graphs-input-json"]
 calc_h_eigen = args["calc_h_eigen"]
 scaling_coef = args["scaling-coef"]
+norm_weights = args["normalize-weights"]
 
 println("Running ADAPT with parameters (worker: $hostname, pid: $pid):")
 for (arg,val) in args
@@ -162,6 +168,21 @@ end
 #     ψ0 = Vector(PauliOperators.SparseKetBasis{n,ComplexF64}(ketmin[] => 1))
 #     E0 = Emin[]
 # end
+
+struct ModalSampleTracer <: ADAPT.AbstractCallback end
+
+function (tracer::ModalSampleTracer)(
+    ::ADAPT.Data, ansatz::ADAPT.AbstractAnsatz, trace::ADAPT.Trace,
+    ::ADAPT.AdaptProtocol, ::ADAPT.GeneratorList,
+    ::ADAPT.Observable, ψ0::ADAPT.QuantumState,
+)
+    ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
+    imode = argmax(abs2.(ψ))                # MOST LIKELY INDEX
+    zmode = imode-1                         # MOST LIKELY BITSTRING (as int)
+
+    push!( get!(trace, :modalsample, Any[]), zmode )
+    return false
+end
 
 function exact_ground_state_energy(H, n)
     Emin = Ref(Inf); ketmin = Ref(KetBitString{n}(0))
@@ -244,6 +265,29 @@ function scale_elist_weights(e_list, coef)
     end
 
     return scaled_weighted_edge_list
+end
+
+function norm_elist_weights(e_list)
+    # Initialize a new list to store the scaled edges
+    scaled_weighted_edge_list = Vector{Tuple{Int64, Int64, Float64}}()
+
+    total_weight = 0
+    
+    # Iterate through each edge in the edge list
+    for (node1, node2, weight) in e_list
+        total_weight += abs(weight)
+    end
+    
+    # Iterate through each edge in the edge list
+    for (node1, node2, weight) in e_list
+        # Scale the weight by the coefficient
+        scaled_weight = weight / total_weight
+        
+        # Append the scaled edge to the new list
+        push!(scaled_weighted_edge_list, (node1, node2, scaled_weight))
+    end
+
+    return scaled_weighted_edge_list, total_weight
 end
 
 function graph_to_adj_m(g)
@@ -338,6 +382,7 @@ iter = ProgressBar(1:graphs_number)
 set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
 #for graph_num in 1:graphs_number
 for graph_num in iter
+    norm_coef = 1.0
     
     if json_graphs_fname == "N/A"
         cur_graph_name = "Graph_$graph_num"
@@ -377,6 +422,13 @@ for graph_num in iter
         #println(typeof(e_list))
     end
     
+    if norm_weights
+        e_list, norm_coef = norm_elist_weights(e_list)
+        println("Normalizing all edgelist weights by $norm_coef")
+        #println(e_list)
+        #println(typeof(e_list))
+    end
+    
     println("\nGraph name: $cur_graph_name;\nNumber of edges: $(Graphs.ne(g));\nNumber of nodes: $(Graphs.nv(g));\nProb: $prob.\n")
     
     e_exact_eig = -999.0
@@ -395,6 +447,10 @@ for graph_num in iter
             e_exact_eig = exact_ground_state_energy(H, n_nodes)
             if scaling_coef != 1.0
                 e_exact_eig = e_exact_eig / scaling_coef
+            end
+            
+            if norm_coef != 1.0
+                e_exact_eig = e_exact_eig * norm_coef
             end 
         end
     end
@@ -442,6 +498,7 @@ for graph_num in iter
         ADAPT.Callbacks.Tracer(:energy, :selected_index, :selected_score, :scores, :elapsed_time, :g_norm),
         ADAPT.Callbacks.ParameterTracer(),
         #ADAPT.Callbacks.Printer(:energy, :selected_index, :selected_score),
+        ModalSampleTracer(),
         ADAPT.Callbacks.ScoreStopper(1e-3),
         ADAPT.Callbacks.ParameterStopper(max_params),
         # ADAPT.Callbacks.FloorStopper(energy_tol, exact_energy_val),
@@ -489,6 +546,12 @@ for graph_num in iter
                 energies_scaled_list = energies_list
             end
             
+            if norm_coef != 1.0
+                energies_scaled_list = energies_list * norm_coef
+            else
+                energies_scaled_list = energies_list
+            end
+            
             # SAMPLE MOST LIKELY BITSTRING
             ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
             ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
@@ -514,6 +577,7 @@ for graph_num in iter
                     :gamma0 => -999.0,
                     :pooltype => pooltype,
                     :edge_weight_scaling_coef => scaling_coef,
+                    :edge_weight_norm_coef => norm_coef,
                     :generator_index_in_pool => trace[:selected_index][1:end-1], 
                     :β_coeff => -999.0,
                     :γ_coeff => -999.0,
@@ -580,9 +644,25 @@ for graph_num in iter
             #     continue
             # end
             
+            # DISPLAY MOST LIKELY BITSTRINGS FROM EACH ADAPTATION
+            #println("Most likely bitstrings after each adaption:")
+            
+            bitstrings_list = []
+            for z in trace[:modalsample][2:end]
+                cur_bitstring = bitstring(z)[end-n_nodes+1:end]
+                #println(cur_bitstring)
+                push!(bitstrings_list, cur_bitstring)
+            end
+            
             energies_list = trace[:energy][trace[:adaptation][2:end]]
             if scaling_coef != 1.0
                 energies_scaled_list = energies_list ./ scaling_coef
+            else
+                energies_scaled_list = energies_list
+            end
+            
+            if norm_coef != 1.0
+                energies_scaled_list = energies_list * norm_coef
             else
                 energies_scaled_list = energies_list
             end
@@ -609,6 +689,7 @@ for graph_num in iter
                     :gamma0 => gamma0,
                     :pooltype => pooltype,
                     :edge_weight_scaling_coef => scaling_coef,
+                    :edge_weight_norm_coef => norm_coef,
                     :generator_index_in_pool => trace[:selected_index][1:end-1], 
                     :β_coeff => ansatz.β_parameters,
                     :γ_coeff => ansatz.γ_parameters,
@@ -617,7 +698,7 @@ for graph_num in iter
                     :energy_mqlib => exact_energy_val,
                     :energy_eigen => e_exact_eig,
                     :cut_mqlib => "$exact_cut_solution_string",
-                    :cut_adapt => "$adapt_solution_string",
+                    :cut_adapt => bitstrings_list,
                     #:took_time => sum(trace[:elapsed_time]),
                     :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
