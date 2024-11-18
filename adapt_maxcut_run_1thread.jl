@@ -99,7 +99,7 @@ function parse_commandline()
         arg_type = String
         default = "N/A"
         
-        "--calc_h_eigen"
+        "--calc-h-eigen"
         help = "Calculate eigenvalue decomposition (exact)"
         arg_type = Bool
         default = true
@@ -134,7 +134,7 @@ weighted = args["weighted"]
 diag_qaoa = args["run-diag-qaoa"]
 degen = args["degen"]
 json_graphs_fname = args["graphs-input-json"]
-calc_h_eigen = args["calc_h_eigen"]
+calc_h_eigen = args["calc-h-eigen"]
 scaling_coef = args["scaling-coef"]
 norm_weights = args["normalize-weights"]
 
@@ -197,7 +197,12 @@ function exact_ground_state_energy(H, n)
     end
     ψ0 = Vector(SparseKetBasis{n,ComplexF64}(ketmin[] => 1))
     E0 = Emin[]
-    return E0
+    
+    ρ = abs2.(ψ0)                    # THE FINAL PROBABILITY DISTRIBUTION
+    pmax, imax = findmax(ρ)
+    ketmax = KetBitString(n, imax-1) # THE MOST LIKELY BITSTRING
+    
+    return E0, string(ketmax)
 end 
 
 function get_weighted_maxcut(g::Graphs.SimpleGraph, rng = _DEFAULT_RNG)
@@ -432,27 +437,46 @@ for graph_num in iter
     println("\nGraph name: $cur_graph_name;\nNumber of edges: $(Graphs.ne(g));\nNumber of nodes: $(Graphs.nv(g));\nProb: $prob.\n")
     
     e_exact_eig = -999.0
+    bitstring_exact_eig = "N/A"
     
-    # BUILD OUT THE PROBLEM HAMILTONIAN
+#     # BUILD OUT THE PROBLEM HAMILTONIAN
+#     if diag_qaoa
+#         H_spv = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
+#         h_frob_norm = norm(Matrix(H_spv))
+#         # Wrap in a QAOAObservable view.
+#         H = ADAPT.ADAPT_QAOA.QAOAObservable(H_spv)
+#     else
+#         H = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
+#         h_frob_norm = norm(Matrix(H))
+#         if (calc_h_eigen == true)
+#             e_exact_eig, bitstring_exact_eig = exact_ground_state_energy(H, n_nodes)
+#             if scaling_coef != 1.0
+#                 e_exact_eig = e_exact_eig / scaling_coef
+#             end
+            
+#             if norm_coef != 1.0
+#                 e_exact_eig = e_exact_eig * norm_coef
+#             end 
+#         end
+#     end
+    
+    H_spv = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
+    h_frob_norm = norm(Matrix(H_spv))
+    if calc_h_eigen
+        e_exact_eig, bitstring_exact_eig = exact_ground_state_energy(H_spv, n_nodes)
+        if scaling_coef != 1.0
+            e_exact_eig = e_exact_eig / scaling_coef
+        end
+
+        if norm_coef != 1.0
+            e_exact_eig = e_exact_eig * norm_coef
+        end
+    end
+    
     if diag_qaoa
-        H_spv = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
-        
-        h_frob_norm = norm(Matrix(H_spv))
-        # Wrap in a QAOAObservable view.
         H = ADAPT.ADAPT_QAOA.QAOAObservable(H_spv)
     else
-        H = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
-        h_frob_norm = norm(Matrix(H))
-        if calc_h_eigen
-            e_exact_eig = exact_ground_state_energy(H, n_nodes)
-            if scaling_coef != 1.0
-                e_exact_eig = e_exact_eig / scaling_coef
-            end
-            
-            if norm_coef != 1.0
-                e_exact_eig = e_exact_eig * norm_coef
-            end 
-        end
+        H = H_spv
     end
     
     push!(graphs_df, (graph_num, edgelist_json, h_frob_norm))
@@ -501,7 +525,7 @@ for graph_num in iter
         ModalSampleTracer(),
         ADAPT.Callbacks.ScoreStopper(1e-3),
         ADAPT.Callbacks.ParameterStopper(max_params),
-        # ADAPT.Callbacks.FloorStopper(energy_tol, exact_energy_val),
+        ADAPT.Callbacks.FloorStopper(energy_tol, exact_energy_val),
         # ADAPT.Callbacks.SlowStopper(1.0, 3),
         # ADAPT.Callbacks.TimeStopper(soft_time_limit),
     ]
@@ -539,6 +563,13 @@ for graph_num in iter
             #     continue
             # end
             
+            bitstrings_list = []
+            for z in trace[:modalsample][2:end]
+                cur_bitstring = bitstring(z)[end-n_nodes+1:end]
+                #println(cur_bitstring)
+                push!(bitstrings_list, cur_bitstring)
+            end
+            
             energies_list = trace[:energy][trace[:adaptation][2:end]]
             if scaling_coef != 1.0
                 energies_scaled_list = energies_list ./ scaling_coef
@@ -551,19 +582,9 @@ for graph_num in iter
             else
                 energies_scaled_list = energies_list
             end
-            
-            # SAMPLE MOST LIKELY BITSTRING
-            ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
-            ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
-            pmax, imax = findmax(ρ)
-            ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
-            
-            # println("p ", ρ)
-            # println("pmax ", pmax)
-            # println("imax ", imax)
-            println("VQE ketmax:", ketmax)
-            
-            adapt_solution_string = string(ketmax)
+
+            println("VQE ketmax:", bitstrings_list[end])
+            println("eig ketmax:", bitstring_exact_eig)
             
             # SAVE THE TRACE
             try
@@ -587,7 +608,8 @@ for graph_num in iter
                     :energy_mqlib => exact_energy_val,
                     :energy_eigen => e_exact_eig,
                     :cut_mqlib => "$exact_cut_solution_string",
-                    :cut_adapt => "$adapt_solution_string",
+                    :cut_eig => bitstring_exact_eig,
+                    :cut_adapt => bitstrings_list,
                     #:took_time => sum(trace[:elapsed_time]),
                     :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
@@ -667,15 +689,8 @@ for graph_num in iter
                 energies_scaled_list = energies_list
             end
             
-            # SAMPLE MOST LIKELY BITSTRING
-            ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
-            ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
-            pmax, imax = findmax(ρ)
-            ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
-            
-            println("QAOA ketmax:", ketmax)
-            
-            adapt_solution_string = string(ketmax)
+            println("QAOA ketmax:", bitstrings_list[end])
+            println("eig ketmax:", bitstring_exact_eig)
 
             # SAVE THE TRACE
             try
@@ -698,6 +713,7 @@ for graph_num in iter
                     :energy_mqlib => exact_energy_val,
                     :energy_eigen => e_exact_eig,
                     :cut_mqlib => "$exact_cut_solution_string",
+                    :cut_eig => bitstring_exact_eig,
                     :cut_adapt => bitstrings_list,
                     #:took_time => sum(trace[:elapsed_time]),
                     :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
@@ -720,7 +736,7 @@ for graph_num in iter
         end
     end
 
-    if json_graphs_fname == "N/A"
+    if (json_graphs_fname == "N/A") && (!diag_qaoa)
         # DOES NOT WORK IF N_NODES VARIES ACROSS GRAPHS
         H_df = DataFrames.DataFrame(H)
         H_df[!, :graph_num] .= graph_num
