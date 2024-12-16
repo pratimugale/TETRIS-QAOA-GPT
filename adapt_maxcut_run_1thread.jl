@@ -104,6 +104,11 @@ function parse_commandline()
         arg_type = Bool
         default = true
         
+        "--save-state-vect"
+        help = "Save the whole state vector"
+        arg_type = Bool
+        default = false
+        
     end
 
     return parse_args(s)
@@ -137,6 +142,7 @@ json_graphs_fname = args["graphs-input-json"]
 calc_h_eigen = args["calc-h-eigen"]
 scaling_coef = args["scaling-coef"]
 norm_weights = args["normalize-weights"]
+save_state_vect = args["save-state-vect"]
 
 println("Running ADAPT with parameters (worker: $hostname, pid: $pid):")
 for (arg,val) in args
@@ -490,6 +496,7 @@ for graph_num in iter
         )
     )
     
+
     exact_cut_solution_string = join(
         map(
             x -> x == 1.0 ? "1" : "0",
@@ -503,6 +510,8 @@ for graph_num in iter
     # end
     
     energy_tol = abs(energy_tol_frac * exact_energy_val)
+    scaled_exact_energy_val = exact_energy_val / norm_coef
+    scaled_energy_tol = energy_tol / norm_coef
 
     # println("Generator data type: ", typeof(pool[1]))
     # println("Note: in the current ADAPT-QAOA implementation, the observable and generators must have the same type.")
@@ -525,12 +534,12 @@ for graph_num in iter
         ModalSampleTracer(),
         ADAPT.Callbacks.ScoreStopper(1e-3),
         ADAPT.Callbacks.ParameterStopper(max_params),
-        ADAPT.Callbacks.FloorStopper(energy_tol, exact_energy_val),
+        ADAPT.Callbacks.FloorStopper(scaled_energy_tol, scaled_exact_energy_val),
         # ADAPT.Callbacks.SlowStopper(1.0, 3),
         # ADAPT.Callbacks.TimeStopper(soft_time_limit),
     ]
     
-    #println("Exact energy (MQLib): $exact_energy_val")
+    println("Exact energy (MQLib): $exact_energy_val")
     ##########
     
     for trial_num = 1:trials_per_graph
@@ -565,9 +574,9 @@ for graph_num in iter
             
             bitstrings_list = []
             for z in trace[:modalsample][2:end]
-                cur_bitstring = bitstring(z)[end-n_nodes+1:end]
+                cur_bitstring = bitstring(z)[end-n_nodes:end]
                 #println(cur_bitstring)
-                push!(bitstrings_list, cur_bitstring)
+                push!(bitstrings_list, string(cur_bitstring))
             end
             
             energies_list = trace[:energy][trace[:adaptation][2:end]]
@@ -585,6 +594,14 @@ for graph_num in iter
 
             println("VQE ketmax:", bitstrings_list[end])
             println("eig ketmax:", bitstring_exact_eig)
+            
+            # SAMPLE MOST LIKELY BITSTRING
+            ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
+            ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
+            pmax, imax = findmax(ρ)
+            ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
+            
+            state_vect_json = JSON.json(round.(ρ, digits=4))
             
             # SAVE THE TRACE
             try
@@ -610,6 +627,7 @@ for graph_num in iter
                     :cut_mqlib => "$exact_cut_solution_string",
                     :cut_eig => bitstring_exact_eig,
                     :cut_adapt => bitstrings_list,
+                    :state_vect_adapt => state_vect_json,
                     #:took_time => sum(trace[:elapsed_time]),
                     :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
@@ -691,6 +709,14 @@ for graph_num in iter
             
             println("QAOA ketmax:", bitstrings_list[end])
             println("eig ketmax:", bitstring_exact_eig)
+            
+            # SAMPLE MOST LIKELY BITSTRING
+            ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
+            ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
+            pmax, imax = findmax(ρ)
+            ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
+            
+            state_vect_json = JSON.json(round.(ρ, digits=4))
 
             # SAVE THE TRACE
             try
@@ -715,6 +741,7 @@ for graph_num in iter
                     :cut_mqlib => "$exact_cut_solution_string",
                     :cut_eig => bitstring_exact_eig,
                     :cut_adapt => bitstrings_list,
+                    :state_vect_adapt => state_vect_json,
                     #:took_time => sum(trace[:elapsed_time]),
                     :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
                     :success_flag => success,
