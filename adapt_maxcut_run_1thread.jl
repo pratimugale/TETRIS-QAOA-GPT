@@ -655,111 +655,118 @@ for graph_num in iter
             ψ0 = ones(ComplexF64, 2^n_nodes) / sqrt(2^n_nodes); ψ0 /= norm(ψ0)
             
             if g0 == "inv"
-                gamma0=1/Graphs.ne(g)
+                gamma0_list = [1/Graphs.ne(g)]
+            elseif occursin(".json", g0)
+                println("For QAOA reading gamma_0 values from: $g0")
+                gamma0_list = JSON.Parser.parsefile(g0);
+                @assert gamma0_list isa AbstractVector "gamma_0 json file does not contain a vector!"
             else
-                gamma0 = parse(Float64, g0)
-            end
-
-            println("For QAOA using gamma_0 = $gamma0, trial: $trial_num")
-
-            if diag_qaoa
-                ansatz = ADAPT.ADAPT_QAOA.DiagonalQAOAAnsatz(gamma0, pool, H)
-            else
-                ansatz = ADAPT.ADAPT_QAOA.QAOAAnsatz(gamma0, H)
-            end
-            #= the first argument is a hyperparameter and can in principle 
-            be set to values other than 0.1 =#
-            trace = ADAPT.Trace()
-
-            # RUN THE ALGORITHM
-            #println("RUNNING ADAPT QAOA!!!")
-            success = ADAPT.run!(ansatz, trace, adapt, vqe, pool, H, ψ0, callbacks)
-            
-            println(success ? "Success!" : "Failure - optimization didn't converge.")
-            
-            #println(keys(trace))
-
-            # # RESULTS
-            # if !success
-            #     continue
-            # end
-            
-            # DISPLAY MOST LIKELY BITSTRINGS FROM EACH ADAPTATION
-            #println("Most likely bitstrings after each adaption:")
-            
-            bitstrings_list = []
-            for z in trace[:modalsample][2:end]
-                cur_bitstring = bitstring(z)[end-n_nodes+1:end]
-                #println(cur_bitstring)
-                push!(bitstrings_list, cur_bitstring)
+                gamma0_list = [parse(Float64, g0)]
             end
             
-            energies_list = trace[:energy][trace[:adaptation][2:end]]
-            if scaling_coef != 1.0
-                energies_scaled_list = energies_list ./ scaling_coef
-            else
-                energies_scaled_list = energies_list
-            end
-            
-            if norm_coef != 1.0
-                energies_scaled_list = energies_list * norm_coef
-            else
-                energies_scaled_list = energies_list
-            end
-            
-            println("QAOA ketmax:", bitstrings_list[end])
-            println("eig ketmax:", bitstring_exact_eig)
-            
-            # SAMPLE MOST LIKELY BITSTRING
-            ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
-            ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
-            pmax, imax = findmax(ρ)
-            ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
-            
-            state_vect_json = JSON.json(round.(ρ, digits=4))
+            for gamma0 in gamma0_list
 
-            # SAVE THE TRACE
-            try
-               #throw(error("hello"))
-               cur_res_df = DataFrames.DataFrame(
+                println("For QAOA using gamma_0 = $gamma0, trial: $trial_num/$trials_per_graph, graph N: $graph_num/$graphs_number")
+
+                if diag_qaoa
+                    ansatz = ADAPT.ADAPT_QAOA.DiagonalQAOAAnsatz(gamma0, pool, H)
+                else
+                    ansatz = ADAPT.ADAPT_QAOA.QAOAAnsatz(gamma0, H)
+                end
+                #= the first argument is a hyperparameter and can in principle 
+                be set to values other than 0.1 =#
+                trace = ADAPT.Trace()
+
+                # RUN THE ALGORITHM
+                #println("RUNNING ADAPT QAOA!!!")
+                success = ADAPT.run!(ansatz, trace, adapt, vqe, pool, H, ψ0, callbacks)
+
+                println(success ? "Success!" : "Failure - optimization didn't converge.")
+
+                #println(keys(trace))
+
+                # # RESULTS
+                # if !success
+                #     continue
+                # end
+
+                # DISPLAY MOST LIKELY BITSTRINGS FROM EACH ADAPTATION
+                #println("Most likely bitstrings after each adaption:")
+
+                bitstrings_list = []
+                for z in trace[:modalsample][2:end]
+                    cur_bitstring = bitstring(z)[end-n_nodes+1:end]
+                    #println(cur_bitstring)
+                    push!(bitstrings_list, cur_bitstring)
+                end
+
+                energies_list = trace[:energy][trace[:adaptation][2:end]]
+                if scaling_coef != 1.0
+                    energies_scaled_list = energies_list ./ scaling_coef
+                else
+                    energies_scaled_list = energies_list
+                end
+
+                if norm_coef != 1.0
+                    energies_scaled_list = energies_list * norm_coef
+                else
+                    energies_scaled_list = energies_list
+                end
+
+                println("QAOA ketmax:", bitstrings_list[end])
+                println("eig ketmax:", bitstring_exact_eig)
+
+                # SAMPLE MOST LIKELY BITSTRING
+                ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
+                ρ = abs2.(ψ)                            # THE FINAL PROBABILITY DISTRIBUTION
+                pmax, imax = findmax(ρ)
+                ketmax = KetBitString(n_nodes, imax-1)        # THE MOST LIKELY BITSTRING
+
+                state_vect_json = JSON.json(round.(ρ, digits=4))
+
+                # SAVE THE TRACE
+                try
+                   #throw(error("hello"))
+                   cur_res_df = DataFrames.DataFrame(
+                        :method => "qaoa",
+                        :graph_name => cur_graph_name,
+                        :graph_num => graph_num,
+                        :run => trial_num,
+                        :n_nodes => n_nodes,
+                        :gamma0 => gamma0,
+                        :pooltype => pooltype,
+                        :edge_weight_scaling_coef => scaling_coef,
+                        :edge_weight_norm_coef => norm_coef,
+                        :generator_index_in_pool => trace[:selected_index][1:end-1], 
+                        :β_coeff => ansatz.β_parameters,
+                        :γ_coeff => ansatz.γ_parameters,
+                        :coeff => -999.0,
+                        :energy => energies_scaled_list,
+                        :energy_mqlib => exact_energy_val,
+                        :energy_eigen => e_exact_eig,
+                        :cut_mqlib => "$exact_cut_solution_string",
+                        :cut_eig => bitstring_exact_eig,
+                        :cut_adapt => bitstrings_list,
+                        :state_vect_adapt => state_vect_json,
+                        #:took_time => sum(trace[:elapsed_time]),
+                        :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
+                        :success_flag => success,
+                    )
+                    append!(results_df, cur_res_df)
+                catch err
+                   @error "ERROR: " exception=(err, catch_backtrace())
+                end
+                cur_trace_df = DataFrames.DataFrame(
                     :method => "qaoa",
                     :graph_name => cur_graph_name,
                     :graph_num => graph_num,
                     :run => trial_num,
-                    :n_nodes => n_nodes,
-                    :gamma0 => gamma0,
-                    :pooltype => pooltype,
-                    :edge_weight_scaling_coef => scaling_coef,
-                    :edge_weight_norm_coef => norm_coef,
-                    :generator_index_in_pool => trace[:selected_index][1:end-1], 
-                    :β_coeff => ansatz.β_parameters,
-                    :γ_coeff => ansatz.γ_parameters,
-                    :coeff => -999.0,
-                    :energy => energies_scaled_list,
-                    :energy_mqlib => exact_energy_val,
-                    :energy_eigen => e_exact_eig,
-                    :cut_mqlib => "$exact_cut_solution_string",
-                    :cut_eig => bitstring_exact_eig,
-                    :cut_adapt => bitstrings_list,
-                    :state_vect_adapt => state_vect_json,
-                    #:took_time => sum(trace[:elapsed_time]),
-                    :took_time => sum(trace[:elapsed_time][trace[:adaptation][2:end]]),
-                    :success_flag => success,
+                    :trace_json => JSON.json(trace),
                 )
-                append!(results_df, cur_res_df)
-            catch err
-               @error "ERROR: " exception=(err, catch_backtrace())
+
+                #println(JSON.json(trace))
+                append!(traces_df, cur_trace_df)
             end
-            cur_trace_df = DataFrames.DataFrame(
-                :method => "qaoa",
-                :graph_name => cur_graph_name,
-                :graph_num => graph_num,
-                :run => trial_num,
-                :trace_json => JSON.json(trace),
-            )
-            
-            #println(JSON.json(trace))
-            append!(traces_df, cur_trace_df)
         end
     end
 
