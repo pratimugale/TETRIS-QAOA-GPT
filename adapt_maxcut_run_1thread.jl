@@ -548,8 +548,8 @@ for graph_num in iter
         # ADAPT.Callbacks.TimeStopper(soft_time_limit),
     ]
     
-    optimizers_list = ["BFGS", "COBYLA"]
-    #optimizers_list = ["COBYLA"]
+    #optimizers_list = ["BFGS", "COBYLA"]
+    optimizers_list = ["COBYLA"]
     
     println("Exact energy (MQLib): $exact_energy_val")
     ##########
@@ -694,6 +694,7 @@ for graph_num in iter
                     println("For QAOA reading gamma_0 values from: $g0")
                     gamma0_list = JSON.Parser.parsefile(g0);
                     @assert gamma0_list isa AbstractVector "gamma_0 json file does not contain a vector!"
+                    gamma0_list = Array{Float64}(gamma0_list)
                 else
                     gamma0_list = [parse(Float64, g0)]
                 end
@@ -752,8 +753,8 @@ for graph_num in iter
                         energies_scaled_list = energies_list
                     end
 
-                    println("QAOA ketmax:", bitstrings_list[end])
-                    println("eig ketmax:", bitstring_exact_eig)
+                    # println("QAOA ketmax:", bitstrings_list[end])
+                    # println("eig ketmax:", bitstring_exact_eig)
 
                     # SAMPLE MOST LIKELY BITSTRING
                     ψ = ADAPT.evolve_state(ansatz, ψ0)      # THE FINAL STATEVECTOR
@@ -792,7 +793,7 @@ for graph_num in iter
                             :edge_weight_norm_coef => norm_coef,
                             :generator_index_in_pool => generator_index_in_pool_list, 
                             :β_coeff => beta_coefs_list,
-                            :γ_coeff => ansatz.γ_parameters,
+                            :γ_coeff => gamma_coefs_list,,
                             :coeff => -999.0,
                             :energy => energies_scaled_list,
                             :energy_mqlib => exact_energy_val,
