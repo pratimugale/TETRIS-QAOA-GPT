@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
@@ -7,6 +10,9 @@ import numpy as np
 from collections import Counter
 import random
 import argparse
+from joblib import Parallel, delayed
+from karateclub.feathergraph import FeatherGraph
+from itertools import islice
 
 tqdm.pandas()
 
@@ -19,15 +25,18 @@ parser = argparse.ArgumentParser(description='Parser for ADAPT GPT circuit prepa
 parser.add_argument('--adapt_results_dir', type=str, help='Path to read results from')
 parser.add_argument('--debug_limit', default=0, type=int, help='Number of input files to sample for speed up (debugging)')
 parser.add_argument('--save_dir', type=str, help='Path to save files')
+parser.add_argument('--n_nodes', type=int, default=10, help='Number of nodes in the dataset')
 parser.add_argument('--rounding_digits', type=int, default=2, help='Number of digits to round to')
 parser.add_argument('--min_block_size', type=int, default=128, help='min sequence length in sliding window')
 parser.add_argument('--max_block_size', type=int, default=256, help='nanoGPT block size')
 parser.add_argument('--val_frac', type=float, default=0.1, help='Validation fraction')
 parser.add_argument('--test_frac', type=float, default=0.1, help='Test fraction')
 parser.add_argument('--approx_ratio_thr', type=float, default=0.97, help='Approximation ratio threshold')
-parser.add_argument('--max_abs_param_val', type=float, default=10, help='Maximum absolute value of gamma and betta params')
+parser.add_argument('--max_abs_param_val', type=float, default=10, help='Maximum absolute value of gamma and beta params')
 parser.add_argument('--perform_coef_mod_range', type=int, default=False, help='Wrap beta to [0; pi] range; 1 is true (default), 0 is false')
 parser.add_argument('--apply_sliding_window', type=bool, default=True, action=argparse.BooleanOptionalAction, help='Apply sliding window to generate training samples')
+parser.add_argument('--apply_feather_graph', type=bool, default=True, action=argparse.BooleanOptionalAction, help='Apply feather graph to generate graph embeddings')
+parser.add_argument('--n_workers', type=int, default=1, help='Number of workers to use to process ADAPT results')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -48,6 +57,9 @@ debug_limit = args.debug_limit
 min_block_size = args.min_block_size
 max_block_size = args.max_block_size
 apply_sliding_window = args.apply_sliding_window
+apply_feather_graph = args.apply_feather_graph
+n_workers = args.n_workers
+n_nodes = args.n_nodes
 
 if debug_limit:
     print(f'For debugging purposes, limit input results to {debug_limit} files.')
@@ -66,17 +78,32 @@ for res_fpath in results_folders_list:
     print('\t', str(res_fpath.absolute()))
     
 df_list = []
+
+def open_df_from_res_csv(fname):
+    try:
+        cur_df = pd.read_csv(fname)
+        cur_df['worker_id'] = fname.stem
+        df_list.append(cur_df)
+    except Exception as e:
+        print(f'{e} (file: {fname})')
+        cur_df = None
+    return cur_df
+
 for cur_dataset_res_path in results_folders_list:
     cur_dataset_res_flist = sorted(cur_dataset_res_path.joinpath('res').glob('*.csv'))
     if debug_limit:
         cur_dataset_res_flist = cur_dataset_res_flist[:debug_limit]
-    for fname in tqdm(cur_dataset_res_flist, desc='Opening ADAPT results'):
-        try:
-            cur_df = pd.read_csv(fname)
-            cur_df['worker_id'] = fname.stem
-            df_list.append(cur_df)
-        except Exception as e:
-            print(f'{e} (file: {fname})')
+    # for fname in tqdm(cur_dataset_res_flist, desc='Opening ADAPT results'):
+    #     try:
+    #         cur_df = pd.read_csv(fname)
+    #         cur_df['worker_id'] = fname.stem
+    #         df_list.append(cur_df)
+    #     except Exception as e:
+    #         print(f'{e} (file: {fname})')
+    df_list = Parallel(n_jobs=n_workers)(
+        delayed(open_df_from_res_csv)(fname) for fname in tqdm(cur_dataset_res_flist, desc='Opening ADAPT results')
+    )
+    df_list  = [df for df in df_list if df_list]
 
 full_run_df = pd.concat(df_list)
 full_run_df['prefix'] = full_run_df['worker_id'].apply(
@@ -89,10 +116,16 @@ for cur_dataset_res_path in results_folders_list:
     cur_dataset_res_flist = sorted(cur_dataset_res_path.joinpath('graphs').glob('*.csv'))
     if debug_limit:
         cur_dataset_res_flist = cur_dataset_res_flist[:debug_limit]
-    for fname in tqdm(cur_dataset_res_flist, desc='Opening graphs'):
-        cur_df = pd.read_csv(fname)
-        cur_df['worker_id'] = fname.stem
-        df_list.append(cur_df)
+    # for fname in tqdm(cur_dataset_res_flist, desc='Opening graphs'):
+    #     cur_df = pd.read_csv(fname)
+    #     cur_df['worker_id'] = fname.stem
+    #     df_list.append(cur_df)
+    df_list = Parallel(n_jobs=n_workers)(
+        delayed(open_df_from_res_csv)(fname) for fname in tqdm(cur_dataset_res_flist, desc='Opening Graphs')
+    )
+    df_list  = [df for df in df_list if df_list]
+
+
 full_run_graphs_df = pd.concat(df_list)
 full_run_graphs_df['edgelist_list'] = (
     full_run_graphs_df['edgelist_json'].progress_apply(
@@ -123,34 +156,6 @@ print("Aggregating results...")
 full_run_df['approx_ratio'] = (
     full_run_df['energy'] / full_run_df['energy_mqlib']
 )
-
-# full_run_agg_stat_df = (
-#     full_run_df.groupby(
-#         ["graph_num", "run", "prefix"]
-#     )
-#     .agg(
-#         {
-#             'pooltype': 'count',
-#             'energy': list,
-#             'took_time': 'last',
-#             'energy_mqlib': 'last',
-#             'generator_index_in_pool': list,
-#             'approx_ratio': 'last',
-#             'β_coeff': list,
-#             'γ_coeff': list,
-#             'energy_mqlib': 'last'
-#         }
-#     )
-#     .reset_index()
-#     .rename(
-#         columns={
-#             'pooltype': 'n_layers',
-#             'energy': 'energy_list',
-#             #'took_time': 'took_time',
-#             'generator_index_in_pool': 'op_list'
-#         }
-#     )
-# )
 
 full_run_agg_stat_df = (
     full_run_df.groupby(
@@ -207,6 +212,72 @@ combined_res_df['graph_id'] = (
     + '_^_'
     + combined_res_df['graph_num'].astype(str)
 )
+
+#-----------------------#
+# Graph embedding
+print("Applying FEATHER graph embedding...")
+
+combined_unique_graphs_df = (
+    combined_res_df[['graph_id', 'edgelist_json']]
+        .drop_duplicates()
+)
+
+def create_weighted_graph_nx(w_elist):
+    G = nx.Graph()
+    G.add_weighted_edges_from(w_elist)
+    return G
+
+combined_unique_graphs_df['edgelist_py_list'] = combined_unique_graphs_df['edgelist_json'].progress_apply(
+    lambda x: [
+        (e[0]-1, e[1]-1, e[2]) for e in json.loads(x)
+        #(e[0]-1, e[1]-1) for e in x
+    ]
+)
+
+combined_unique_graphs_df['graph_nx'] = (
+    combined_unique_graphs_df['edgelist_py_list']
+        .progress_apply(lambda x: create_weighted_graph_nx(x))
+)
+
+combined_unique_graphs_w_idx_df = combined_unique_graphs_df.set_index('graph_id')
+graphs_nx_dict = combined_unique_graphs_w_idx_df['graph_nx'].to_dict()
+graphs_nx_filt_dict = dict(
+    [(name, g) for name, g in tqdm(graphs_nx_dict.items()) if g.number_of_nodes() == n_nodes]
+)
+graphs_nx_filt_names = list(graphs_nx_filt_dict.keys())
+graphs_nx_filt_list = list(graphs_nx_filt_dict.values())
+
+emb_graph_idx_to_id_dict = {k:v for k,v in enumerate(graphs_nx_filt_names)}
+emb_graph_id_to_idx_dict = {v:k for k,v in enumerate(graphs_nx_filt_names)}
+
+def get_feather_emb(g_list):
+    feather_model = FeatherGraph()
+    feather_model.fit(graphs=g_list)
+    return feather_model.get_embedding()
+
+def split_list(lst, n):
+    it = iter(lst)
+    return [list(islice(it, i)) for i in [len(lst) // n + (1 if x < len(lst) % n else 0) for x in range(n)]]
+
+def embed_nx_w_feather_parallel(graphs_list, n_workers=2):
+    graphs_chunked_list = split_list(graphs_list, n_workers)
+    
+    #graphs_chunked_list=[graphs_list]
+    
+    emb_np_list = Parallel(n_jobs=n_workers)(
+        delayed(get_feather_emb)(g_chunk) for g_chunk in graphs_chunked_list
+    )
+    
+    return np.vstack(emb_np_list)
+
+feather_par_emb = embed_nx_w_feather_parallel(graphs_nx_filt_list[:], n_workers=n_workers)
+feather_par_emb = feather_par_emb.round(rounding_digits)
+
+combined_res_df['has_emb'] = combined_res_df['graph_id'].apply(
+    lambda x: True if x in emb_graph_id_to_idx_dict else False
+)
+
+#-----------------------#
 
 # Filtering 
 print("Selecting suitable ansatz...")
@@ -445,19 +516,36 @@ print(f"\tNumber of training samples: {len(train_data)}, val samples: {len(val_d
 if apply_sliding_window:
 
     train_data_conc = []
-    for l in train_data[f'token_int_seq_round_d{rounding_digits}_sw']:
-        train_data_conc += l
+    train_data_graph_idx_list = []
+    for cur_graph_id, l in zip(
+        train_data['graph_id'],
+        train_data[f'token_int_seq_round_d{rounding_digits}_sw']
+    ):
+        if cur_graph_id in emb_graph_id_to_idx_dict:
+            train_data_conc += l
+            train_data_graph_idx_list += [emb_graph_id_to_idx_dict[cur_graph_id]] * len(l)
     train_data_conc_np = np.array(train_data_conc, dtype=np.uint16)
-    print("shape:", train_data_conc_np.shape)
 
     val_data_conc = []
-    for l in val_data[f'token_int_seq_round_d{rounding_digits}_sw']:
-        val_data_conc += l
+    val_data_graph_idx_list = []
+    for cur_graph_id, l in zip(
+        val_data['graph_id'],
+        val_data[f'token_int_seq_round_d{rounding_digits}_sw']
+    ):
+        if cur_graph_id in emb_graph_id_to_idx_dict:
+            val_data_conc += l
+            val_data_graph_idx_list += [emb_graph_id_to_idx_dict[cur_graph_id]] * len(l)
     val_data_conc_np = np.array(val_data_conc, dtype=np.uint16)
 
     test_data_conc = []
-    for l in test_data[f'token_int_seq_round_d{rounding_digits}_sw']:
-        test_data_conc += l
+    test_data_graph_idx_list = []
+    for cur_graph_id, l in zip(
+        test_data['graph_id'],
+        test_data[f'token_int_seq_round_d{rounding_digits}_sw']
+    ):
+        if cur_graph_id in emb_graph_id_to_idx_dict:
+            test_data_conc += l
+            test_data_graph_idx_list += [emb_graph_id_to_idx_dict[cur_graph_id]] * len(l)
     test_data_conc_np = np.array(test_data_conc, dtype=np.uint16)
 
 
@@ -492,10 +580,21 @@ combined_res_tok_shf_df.to_pickle(
     save_path.joinpath('combined_res_tok_shf_df.pkl')
 )
 
+emb_size = feather_par_emb.shape[1]
+np.save(
+    save_path.joinpath(f'feather_emb_d{emb_size}.npy'),
+    feather_par_emb
+)
+
 meta = {
     'vocab_size': vocab_size,
     'itos': int_idx_to_token_dict,
     'stoi': token_to_int_idx_dict,
+    'train_data_graph_idx_list': train_data_graph_idx_list,
+    'val_data_graph_idx_list': val_data_graph_idx_list,
+    'test_data_graph_idx_list': test_data_graph_idx_list,
+    'emb_graph_id_to_idx_dict': emb_graph_id_to_idx_dict,
+    'emb_graph_idx_to_id_dict': emb_graph_idx_to_id_dict,
 }
 
 pd.to_pickle(
