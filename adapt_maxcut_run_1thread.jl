@@ -13,7 +13,8 @@ import Random
 using ProgressBars
 using ArgParse
 using Multibreak
-_DEFAULT_RNG = Random.MersenneTwister(1234);
+
+include("graph_functions.jl")
 
 # Function to parse the command-line arguments
 function parse_commandline()
@@ -163,32 +164,6 @@ for (arg,val) in args
     println("  $arg  =>  $val")
 end
 
-# function exact_ground_state_energy(H)
-#     # May take a long time!
-#     Hm = Matrix(H)
-#     E, U = eigen(Hm) # Perform the eigenvalue decomposition
-#     ψ0 = U[:, 1]
-#     E0 = real(E[1])
-#     return E0
-# end
-
-# module Exact
-#     import ..PauliOperators
-#     import ..H, ..n
-#     Emin = Ref(Inf); ketmin = Ref(PauliOperators.KetBitString{n}(0))
-#     for v in 0:1<<n-1
-#         ket = PauliOperators.KetBitString{n}(v)
-#         vec = PauliOperators.SparseKetBasis{n,ComplexF64}(ket => 1)
-#         Ev = real((H*vec)[ket])
-#         if Ev < Emin[]
-#             Emin[] = Ev
-#             ketmin[] = ket
-#         end
-#     end
-#     ψ0 = Vector(PauliOperators.SparseKetBasis{n,ComplexF64}(ketmin[] => 1))
-#     E0 = Emin[]
-# end
-
 struct ModalSampleTracer <: ADAPT.AbstractCallback end
 
 function (tracer::ModalSampleTracer)(
@@ -225,12 +200,6 @@ function exact_ground_state_energy(H, n)
     return E0, string(ketmax)
 end 
 
-function get_weighted_maxcut(g::Graphs.SimpleGraph, rng = _DEFAULT_RNG)
-    edge_indices = Graphs.edges(g)
-    edge_list = [(Graphs.src(e), Graphs.dst(e), rand(rng, Float64)) for e in edge_indices]
-    return edge_list
-end
-
 function maxcut_matrix_from_adjacency(A::Matrix{Float64})
     # Step 1: Compute the Degree matrix D
     D = Diagonal(sum(A, dims=2)[:])
@@ -264,18 +233,6 @@ function get_mqlib_energy_from_adj_m(adj_matrix)
     return solution, exact_energy_val
 end
 
-function graph_to_edgelist(g)
-    weighted_edge_list = [
-        (
-            SimpleWeightedGraphs.src(e),
-            SimpleWeightedGraphs.dst(e),
-            SimpleWeightedGraphs.weight(e)
-        ) for e in SimpleWeightedGraphs.edges(g)
-    ]
-
-    return weighted_edge_list
-end 
-
 function scale_elist_weights(e_list, coef)
     # Initialize a new list to store the scaled edges
     scaled_weighted_edge_list = Vector{Tuple{Int64, Int64, Float64}}()
@@ -290,79 +247,6 @@ function scale_elist_weights(e_list, coef)
     end
 
     return scaled_weighted_edge_list
-end
-
-function norm_elist_weights(e_list)
-    # Initialize a new list to store the scaled edges
-    scaled_weighted_edge_list = Vector{Tuple{Int64, Int64, Float64}}()
-
-    total_weight = 0
-    
-    # Iterate through each edge in the edge list
-    for (node1, node2, weight) in e_list
-        total_weight += abs(weight)
-    end
-    
-    # Iterate through each edge in the edge list
-    for (node1, node2, weight) in e_list
-        # Scale the weight by the coefficient
-        scaled_weight = weight / total_weight
-        
-        # Append the scaled edge to the new list
-        push!(scaled_weighted_edge_list, (node1, node2, scaled_weight))
-    end
-
-    return scaled_weighted_edge_list, total_weight
-end
-
-function graph_to_adj_m(g)
-    adj_matrix = Matrix(SimpleWeightedGraphs.adjacency_matrix(g))
-    return adj_matrix
-end 
-
-function rand_weigh_graph_generator(
-        n_nodes::Int64,
-        prob::Float64=0.5;
-        weighted::Bool=true,
-        neg_weights::Bool=true
-    )
-    
-    g = Graphs.erdos_renyi(n_nodes, prob)
-
-    g_weighted = SimpleWeightedGraphs.SimpleWeightedGraph(n_nodes)
-    for e in SimpleWeightedGraphs.edges(g)
-        s = SimpleWeightedGraphs.src(e)
-        d = SimpleWeightedGraphs.dst(e)
-        if weighted
-            w = round(rand(), digits=2)
-            while w == 0.0
-                w = round(rand(), digits=2)
-            end 
-        else
-            w = 1
-        end 
-        if neg_weights
-            w_sign = rand([-1,1])
-            w = w * w_sign
-        end
-        SimpleWeightedGraphs.add_edge!(g_weighted, s, d, w)
-    end
-    return g_weighted
-end
-
-function edgelist_to_graph(edgelist; num_vertices=0)
-
-    if num_vertices == 0
-        num_vertices = maximum(max(src, dst) for (src, dst, w) in edgelist)
-    end
-    g = SimpleWeightedGraphs.SimpleWeightedGraph(num_vertices)
-
-    # Add edges with weights to the graph
-    for (src, dst, w) in edgelist
-        Graphs.add_edge!(g, src, dst, w)
-    end
-    
-    return g
 end
 
 if !isdir(""*output_dir*"/hams")
@@ -385,16 +269,13 @@ results_df = DataFrames.DataFrame()
 hams_df = DataFrames.DataFrame()
 graphs_df = DataFrames.DataFrame(
     graph_num = Int[],
+    g_method = String[],
     edgelist_json = String[],
     H_frob_norm = Float64[],
 )
 traces_df = DataFrames.DataFrame()
 
 # main loop
-
-#prob=0.9999
-
-prob_list = 0.3:0.1:0.9  # List of probabilities from 0.3 to 0.9
 
 if json_graphs_fname != "N/A"
     println("Loading graphs from: $json_graphs_fname")
@@ -412,12 +293,32 @@ set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
 
         if json_graphs_fname == "N/A"
             cur_graph_name = "Graph_$graph_num"
-            prob = Random.rand(prob_list)
-            g = rand_weigh_graph_generator(n_nodes, prob, weighted=weighted, neg_weights=use_negative_weights)
+#             prob = Random.rand(prob_list)
+#             g = rand_weigh_graph_generator(n_nodes, prob, weighted=weighted, neg_weights=use_negative_weights)
 
-            while Graphs.ne(g) == 0
-                println("Generated empty graph! Trying again")
-                g = rand_weigh_graph_generator(n_nodes, prob, weighted=weighted, neg_weights=use_negative_weights)
+#             while Graphs.ne(g) == 0
+#                 println("Generated empty graph! Trying again")
+#                 g = rand_weigh_graph_generator(n_nodes, prob, weighted=weighted, neg_weights=use_negative_weights)
+#             end
+            
+            g_unweighted, g_method = generate_random_graph(
+                n_nodes,
+                methods=[
+                    "erdos_renyi",
+                    "barabasi_albert",
+                    "watts_strogatz",
+                    "random_regular",
+                    "bipartite"
+                ]
+            )
+            
+            if weighted
+                g = add_rand_weights_to_graph(
+                    g_unweighted,
+                    neg_weights=use_negative_weights
+                )
+            else
+                g = g_unweighted
             end
         else
             prob = "N/A"
@@ -425,6 +326,7 @@ set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
             cur_graph_elist = json_graphs_dict[cur_graph_name]["elist"]
             global n_nodes = json_graphs_dict[cur_graph_name]["n_nodes"]
             g = edgelist_to_graph(cur_graph_elist, num_vertices=n_nodes)
+            g_method = "input_file"
         end
 
         # BUILD OUT THE POOL
@@ -463,31 +365,12 @@ set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
             #println(typeof(e_list))
         end
 
-        println("\nGraph name: $cur_graph_name;\nNumber of edges: $(Graphs.ne(g));\nNumber of nodes: $(Graphs.nv(g));\nProb: $prob.\n")
+        println("\nGraph name: $cur_graph_name;\nNumber of edges: $(Graphs.ne(g));\nNumber of nodes: $(Graphs.nv(g));\nGenerator: $g_method.\n")
 
         e_exact_eig = -999.0
         bitstring_exact_eig = "N/A"
-
-    #     # BUILD OUT THE PROBLEM HAMILTONIAN
-    #     if diag_qaoa
-    #         H_spv = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
-    #         h_frob_norm = norm(Matrix(H_spv))
-    #         # Wrap in a QAOAObservable view.
-    #         H = ADAPT.ADAPT_QAOA.QAOAObservable(H_spv)
-    #     else
-    #         H = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
-    #         h_frob_norm = norm(Matrix(H))
-    #         if (calc_h_eigen == true)
-    #             e_exact_eig, bitstring_exact_eig = exact_ground_state_energy(H, n_nodes)
-    #             if scaling_coef != 1.0
-    #                 e_exact_eig = e_exact_eig / scaling_coef
-    #             end
-
-    #             if norm_coef != 1.0
-    #                 e_exact_eig = e_exact_eig * norm_coef
-    #             end 
-    #         end
-    #     end
+        
+        # BUILD OUT THE PROBLEM HAMILTONIAN
 
         H_spv = ADAPT.Hamiltonians.maxcut_hamiltonian(n_nodes, e_list)
         h_frob_norm = norm(Matrix(H_spv))
@@ -508,7 +391,7 @@ set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
             H = H_spv
         end
 
-        push!(graphs_df, (graph_num, edgelist_json, h_frob_norm))
+        push!(graphs_df, (graph_num, g_method, edgelist_json, h_frob_norm))
 
         ##########
         # MQLib block
