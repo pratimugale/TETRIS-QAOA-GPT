@@ -122,6 +122,11 @@ function parse_commandline()
         arg_type = String
         default = "qaoa_double_pool"
         
+        "--use-floor-stopper"
+        help = "Use floor stopper callback"
+        arg_type = Bool
+        default = true
+        
     end
 
     return parse_args(s)
@@ -158,6 +163,7 @@ norm_weights = args["normalize-weights"]
 save_state_vect = args["save-state-vect"]
 optimizer = args["optimizer"]
 op_pool = args["op-pool"]
+use_floor_stopper = args["use-floor-stopper"]
 
 println("Running ADAPT with parameters (worker: $hostname, pid: $pid):")
 for (arg,val) in args
@@ -305,10 +311,10 @@ set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
                 n_nodes,
                 methods=[
                     "erdos_renyi",
-                    "barabasi_albert",
-                    "watts_strogatz",
-                    "random_regular",
-                    "bipartite"
+                    #"barabasi_albert",
+                    #"watts_strogatz",
+                    #"random_regular",
+                    #"bipartite"
                 ]
             )
             
@@ -439,14 +445,17 @@ set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
             #op_pool != "qaoa_mixer" ? ADAPT.Callbacks.ScoreStopper(1e-3) : nothing,
             #ADAPT.Callbacks.ScoreStopper(1e-3),
             ADAPT.Callbacks.ParameterStopper(max_params),
-            ADAPT.Callbacks.FloorStopper(scaled_energy_tol, scaled_exact_energy_val),
             # ADAPT.Callbacks.SlowStopper(1.0, 3),
             # ADAPT.Callbacks.TimeStopper(soft_time_limit),
         ]
         
         # Conditionally add ScoreStopper
         if op_pool != "qaoa_mixer"
-            push!(callbacks, ADAPT.Callbacks.ScoreStopper(1e-3))
+            push!(callbacks, ADAPT.Callbacks.ScoreStopper(1e-5))
+        end
+        
+        if use_floor_stopper
+            push!(callbacks, ADAPT.Callbacks.FloorStopper(scaled_energy_tol, scaled_exact_energy_val))
         end
         
         println("Number of callbacks: $(length(callbacks))")
@@ -683,7 +692,7 @@ set_description(iter, "Graphs on: "*hostname*"; pid: "*string(pid)*":")
 
                         n_layers = length(generator_index_in_pool_list)
                         el_time = round(cur_elapsed_time, digits=2)
-                        approx_ratio = round(energies_scaled_list[end] / exact_energy_val, digits=2)
+                        approx_ratio = energies_scaled_list[end] / exact_energy_val
 
                         println("final energy:\t$(energies_scaled_list[end]) (through trace)")
                         println("Took time: $el_time sec.;\nN layers: $n_layers;\ng0 = $gamma0;\nar = $approx_ratio")
