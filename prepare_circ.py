@@ -38,6 +38,7 @@ parser.add_argument('--apply_sliding_window', type=bool, default=True, action=ar
 parser.add_argument('--apply_feather_graph', type=bool, default=True, action=argparse.BooleanOptionalAction, help='Apply feather graph to generate graph embeddings')
 parser.add_argument('--n_workers', type=int, default=1, help='Number of workers to use to process ADAPT results')
 parser.add_argument('--skip_only_qaoa_circ', type=bool, default=False, action=argparse.BooleanOptionalAction, help='Exclude circuits with only QAOA mixer present')
+parser.add_argument('--allowed_graph_generators', type=str, default="all", help='Allowed graph generators. Default: all. Should be separated with ;. Allowed values: erdos_renyi;barabasi_albert;watts_strogatz;random_regular;bipartite')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -62,35 +63,39 @@ apply_feather_graph = args.apply_feather_graph
 n_workers = args.n_workers
 n_nodes = args.n_nodes
 skip_only_qaoa_circ = args.skip_only_qaoa_circ
+allowed_graph_generators_list = args.allowed_graph_generators.split(';')
 
 if debug_limit:
     print(f'For debugging purposes, limit input results to {debug_limit} files.')
 
-results_fpath = Path(results_fpath_str)
+results_fpath_list = [Path(el) for el in results_fpath_str.split(';')]
 save_path = Path(save_path_str)
 
-assert results_fpath.exists() and results_fpath.is_dir(), "Results path is invalid."
+for results_fpath in results_fpath_list:
+    assert results_fpath.exists() and results_fpath.is_dir(), "Results path is invalid."
 
 # Opening all files
 
 ## ADAPT results
-results_folders_list = [results_fpath]
+results_folders_list = results_fpath_list
 print("Reading ADAPT.jl results from:")
 for res_fpath in results_folders_list:
     print('\t', str(res_fpath.absolute()))
     
 df_list = []
+df_list_all = []
 
 def open_df_from_res_csv(fname):
+    #df_list = []
     try:
         cur_df = pd.read_csv(fname)
         cur_df['worker_id'] = fname.stem
-        df_list.append(cur_df)
+        #df_list.append(cur_df)
     except Exception as e:
         print(f'{e} (file: {fname})')
         cur_df = None
     return cur_df
-
+ 
 for cur_dataset_res_path in results_folders_list:
     cur_dataset_res_flist = sorted(cur_dataset_res_path.joinpath('res').glob('*.csv'))
     if debug_limit:
@@ -103,9 +108,11 @@ for cur_dataset_res_path in results_folders_list:
     #     except Exception as e:
     #         print(f'{e} (file: {fname})')
     df_list = Parallel(n_jobs=n_workers)(
-        delayed(open_df_from_res_csv)(fname) for fname in tqdm(cur_dataset_res_flist, desc='Opening ADAPT results')
+        delayed(open_df_from_res_csv)(fname) for fname in tqdm(cur_dataset_res_flist, desc=f'Opening ADAPT results ({cur_dataset_res_path.stem})')
     )
-    df_list  = [df for df in df_list if df_list]
+    df_list_all += df_list
+df_list  = [df for df in df_list_all if df is not None]
+print("df_list len:", len(df_list))
 
 full_run_df = pd.concat(df_list)
 full_run_df['prefix'] = full_run_df['worker_id'].apply(
@@ -114,6 +121,7 @@ full_run_df['prefix'] = full_run_df['worker_id'].apply(
 
 ## Graphs
 df_list = []
+df_list_all = []
 for cur_dataset_res_path in results_folders_list:
     cur_dataset_res_flist = sorted(cur_dataset_res_path.joinpath('graphs').glob('*.csv'))
     if debug_limit:
@@ -123,9 +131,18 @@ for cur_dataset_res_path in results_folders_list:
     #     cur_df['worker_id'] = fname.stem
     #     df_list.append(cur_df)
     df_list = Parallel(n_jobs=n_workers)(
-        delayed(open_df_from_res_csv)(fname) for fname in tqdm(cur_dataset_res_flist, desc='Opening Graphs')
+        delayed(open_df_from_res_csv)(fname) for fname in tqdm(cur_dataset_res_flist, desc=f'Opening graphs ({cur_dataset_res_path.stem})')
     )
-    df_list  = [df for df in df_list if df_list]
+    df_list_all += df_list
+    
+    for df in df_list:
+        if df is not None:
+            if 'g_method' not in df.columns:
+                #print("Graphs were generated with older version of ADAPT-GPT preprocessor. Most likely, they are ER.")
+                df['g_method'] = "erdos_renyi"
+        
+df_list  = [df for df in df_list_all if df is not None]
+print("df_list len:", len(df_list))
 
 
 full_run_graphs_df = pd.concat(df_list)
@@ -151,6 +168,9 @@ full_run_graphs_df['num_connected_comp'] = full_run_graphs_df['edgelist_list'].p
 full_run_graphs_df['prefix'] = full_run_graphs_df['worker_id'].apply(
     lambda x: x[:-12]
 )
+
+print("Graphs count:")
+print(full_run_graphs_df['g_method'].value_counts())
 
 # Aggregating results
 print("Aggregating results...")
@@ -218,6 +238,16 @@ combined_res_df['graph_id'] = (
 combined_res_df['only_qaoa_circ'] = combined_res_df['op_list'].progress_apply(
     lambda x: all(e == n_nodes+1 for e in x)
 )
+
+if allowed_graph_generators_list != ['all']:
+    print(f"Filtering graphs based on allowed generators: {allowed_graph_generators_list}")
+    print(f"N circuits before: {len(combined_res_df)}")
+    combined_res_df = combined_res_df[
+        combined_res_df['g_method'].isin(allowed_graph_generators_list)
+    ]
+    print(f"N circuits after: {len(combined_res_df)}")
+
+print(combined_res_df['g_method'].value_counts())
 
 #-----------------------#
 # Graph embedding
@@ -596,13 +626,17 @@ combined_res_tok_shf_df.to_pickle(
     save_path.joinpath('combined_res_tok_shf_df.pkl')
 )
 
-sample_size_per_w_bucket = 25
+target_val_size = 1000
+sample_size_per_w_bucket = int(
+      target_val_size
+    / len(combined_res_df['edgelist_list_len'].drop_duplicates())
+)
 val_data_sampled = (
     val_data[
           (~val_data['token_seq_round_d2'].isna())
     ]
     .groupby('edgelist_list_len').apply(
-        lambda x: x.sample(sample_size_per_w_bucket) if len(x) > sample_size_per_w_bucket else None
+        lambda x: x.sample(sample_size_per_w_bucket) if len(x) > sample_size_per_w_bucket else x
     )
     .reset_index(drop=True)
 )
