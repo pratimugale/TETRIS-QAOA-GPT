@@ -9,7 +9,7 @@ Our work is still in progress, stay tuned!
 - Python part:
 	1. Create conda environment:  `conda create -n adapt_gpt python=3.10`
 	2. Activate it: `conda activate adapt_gpt`
-	3. Install python dependencies: `pip install torch numpy transformers datasets tiktoken wandb ipykernel pandas tqdm networkx matplotlib`
+	3. Install python dependencies: `pip install torch numpy transformers datasets tiktoken wandb ipykernel pandas tqdm networkx matplotlib joblib scipy gurobipy`
 3. ADAPT GPT codebase:
 	1. Clone this repo with its dependencies: `git clone https://github.com/IlyaTyagin/ADAPT-GPT --recurse-submodules`
 	2. `cd ADAPT-GPT/ADAPT.jl/`
@@ -23,7 +23,7 @@ The pipeline is run as follows:
 	- Run multithreaded ADAPT (you can edit the `adapt_maxcut_run_multithread.sh` script to adjust the parameters): `./adapt_maxcut_run_multithread.sh`
 	- Note: for a meaningful GPT model, we need at least 50k circuits. This number usually requires a CPU-based cluster.
 2. Tokenize them and prepare for GPT training:
-	- Run: `python prepare_circ.py --adapt_results_dir <ADAPT_RESULTS_DIR> --save_dir <SAVING_DIR>`
+	- Run: `python prepare_circ.py --adapt_results_dir <ADAPT_RESULTS_DIR> --save_dir <SAVING_DIR> --n_nodes <N_NODES>`, where `<N_NODES>` is the problem size (qubits/graph nodes) for all circuits in the dataset.
 	- Note: nanoGPT expects `<SAVING_DIR>` to be a folder inside `nanoGPT/data`
 3. Train GPT model
 	1. Go to nanoGPT directory: `cd nanoGPT/`

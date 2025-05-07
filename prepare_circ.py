@@ -22,10 +22,10 @@ tqdm.pandas()
 # max_abs_param_val = 10
 
 parser = argparse.ArgumentParser(description='Parser for ADAPT GPT circuit preparation.')
-parser.add_argument('--adapt_results_dir', type=str, help='Path to read results from')
+parser.add_argument('--adapt_results_dir', type=str, help='Path to read results from', required=True)
 parser.add_argument('--debug_limit', default=0, type=int, help='Number of input files to sample for speed up (debugging)')
-parser.add_argument('--save_dir', type=str, help='Path to save files')
-parser.add_argument('--n_nodes', type=int, default=10, help='Number of nodes in the dataset')
+parser.add_argument('--save_dir', type=str, help='Path to save files', required=True)
+parser.add_argument('--n_nodes', type=int, help='Number of nodes in the dataset', required=True)
 parser.add_argument('--rounding_digits', type=int, default=2, help='Number of digits to round to')
 parser.add_argument('--min_block_size', type=int, default=128, help='min sequence length in sliding window')
 parser.add_argument('--max_block_size', type=int, default=256, help='nanoGPT block size')
@@ -33,7 +33,7 @@ parser.add_argument('--val_frac', type=float, default=0.1, help='Validation frac
 parser.add_argument('--test_frac', type=float, default=0.1, help='Test fraction')
 parser.add_argument('--approx_ratio_thr', type=float, default=0.97, help='Approximation ratio threshold')
 parser.add_argument('--max_abs_param_val', type=float, default=10, help='Maximum absolute value of gamma and beta params')
-parser.add_argument('--perform_coef_mod_range', type=int, default=False, help='Wrap beta to [0; pi] range; 1 is true (default), 0 is false')
+parser.add_argument('--perform_coef_mod_range', type=int, default=True, help='Wrap beta to [0; pi] range; 1 is true (default), 0 is false')
 parser.add_argument('--apply_sliding_window', type=bool, default=True, action=argparse.BooleanOptionalAction, help='Apply sliding window to generate training samples')
 parser.add_argument('--apply_feather_graph', type=bool, default=True, action=argparse.BooleanOptionalAction, help='Apply feather graph to generate graph embeddings')
 parser.add_argument('--n_workers', type=int, default=1, help='Number of workers to use to process ADAPT results')
@@ -595,9 +595,9 @@ if apply_sliding_window:
     test_data_conc_np = np.array(test_data_conc, dtype=np.uint16)
 
 
-    print(f"\tTrain has {len(train_data_conc_np):,} tokens")
-    print(f"\tVal has {len(val_data_conc_np):,} tokens")
-    print(f"\tTest has {len(test_data_conc_np):,} tokens")
+    # print(f"\tTrain has {len(train_data_conc_np):,} samples")
+    # print(f"\tVal has {len(val_data_conc_np):,} samples")
+    # print(f"\tTest has {len(test_data_conc_np):,} samples")
 
 # Saving
 
