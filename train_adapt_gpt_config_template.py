@@ -32,6 +32,7 @@ warmup_iters = 100 # not super necessary potentially
 graph_emb_dim = 500 # default for FEATHER graph
 use_graph_emb = {use_graph_emb}
 pool_type = '{pool_type}'
+n_nodes = {n_nodes}
 
 # on macbook also add
 # device = 'cpu'  # run on cpu only

@@ -679,6 +679,7 @@ config_to_save_str = config_template_str.format(
     block_size=max_block_size,
     use_graph_emb="True",
     pool_type=pool_type,
+    n_nodes=n_nodes,
 )
 
 with open(save_path.joinpath('train_adapt_gpt_config.py'), 'w') as f:
