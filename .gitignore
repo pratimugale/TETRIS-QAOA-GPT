@@ -1,0 +1,22 @@
+# Exclude Python cache directories
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Exclude hidden directories and files (starting with a dot)
+.*
+!.gitignore          # (optionally allow .gitignore itself to be tracked)
+
+# Exclude editor/project files
+.vscode/
+.idea/
+
+# Exclude backup/temp files (starting with ~ or ending with ~)
+*~
+~*
+
+# Exclude MacOS system files
+.DS_Store
+
+# Exclude Jupyter notebook checkpoints
+.ipynb_checkpoints/
