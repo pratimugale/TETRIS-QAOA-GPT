@@ -11,7 +11,7 @@ from collections import Counter
 import random
 import argparse
 from joblib import Parallel, delayed
-from karateclub.feathergraph import FeatherGraph
+from FEATHER.src.feather import FEATHERG
 from itertools import islice
 
 tqdm.pandas()
@@ -288,7 +288,7 @@ emb_graph_idx_to_id_dict = {k:v for k,v in enumerate(graphs_nx_filt_names)}
 emb_graph_id_to_idx_dict = {v:k for k,v in enumerate(graphs_nx_filt_names)}
 
 def get_feather_emb(g_list):
-    feather_model = FeatherGraph()
+    feather_model = FEATHERG()
     feather_model.fit(graphs=g_list)
     return feather_model.get_embedding()
 

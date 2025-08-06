@@ -12,7 +12,7 @@ import json
 from gurobipy import Model, GRB
 import gurobipy as gb
 
-from karateclub.feathergraph import FeatherGraph
+from FEATHER.src.feather import FEATHERG
 from itertools import islice
 from joblib import Parallel, delayed
 
@@ -406,7 +406,7 @@ def get_feather_emb(
     emb_graph_id_to_idx_dict = {v:k for k,v in enumerate(graphs_nx_filt_names)}
     
     def get_single_thread_feather_emb(g_list):
-        feather_model = FeatherGraph()
+        feather_model = FEATHERG()
         feather_model.fit(graphs=g_list)
         return feather_model.get_embedding()
     

@@ -4,3 +4,6 @@
 [submodule "nanoGPT"]
 	path = nanoGPT
 	url = https://github.com/karpathy/nanoGPT
+[submodule "FEATHER"]
+	path = FEATHER
+	url = https://github.com/IlyaTyagin/FEATHER
