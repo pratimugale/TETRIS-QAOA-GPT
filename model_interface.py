@@ -23,6 +23,16 @@ from util import (
     prepare_model_input
 )
 
+dtype_str_to_torch_dict = {
+    "float32": torch.float32,
+    "float": torch.float32,
+    "float16": torch.float16,
+    "half": torch.float16,
+    "bfloat16": torch.bfloat16,
+    "float64": torch.float64,
+    "double": torch.float64,
+}
+
 class QAOA_GPT():
     def __init__(
         self,
@@ -80,7 +90,7 @@ class QAOA_GPT():
         torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
         torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
         self.device_type = 'cuda' if 'cuda' in self.device else 'cpu' # for later use in torch.autocast
-        ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[self.dtype]
+        ptdtype = dtype_str_to_torch_dict[self.dtype]
         self.ctx = nullcontext() if self.device_type == 'cpu' else torch.amp.autocast(device_type=self.device_type, dtype=ptdtype)
 
         self.meta = pd.read_pickle(f'{data_dir}/meta.pkl')
@@ -132,6 +142,11 @@ class QAOA_GPT():
             calculate_classic_maxcut=calculate_classic_maxcut,
         )
 
+        if self.device == 'cpu':
+            emb_dtype = "float"
+        else:
+            emb_dtype = self.dtype
+            
         gc_df = generate_circ_from_df(
             graphs_nx_df,
             graph_emb_np=feather_par_emb,
@@ -147,6 +162,7 @@ class QAOA_GPT():
             top_k=top_k,
             token_seq_col='token_seq_round_d2',
             normalize_weights_flag=False,
+            emb_dtype=dtype_str_to_torch_dict[emb_dtype],
         )
 
         return gc_df
@@ -163,7 +179,7 @@ class QAOA_GPT():
             temp_folder=self.temp_folder,
             pool_type=self.pool_type
         )
-
+        
         output_columns_list =[
             "graph_prefix",
             "graph",

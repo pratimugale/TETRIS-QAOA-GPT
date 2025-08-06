@@ -70,7 +70,7 @@ def generate_circ_from_df(
     top_k = 200, # retain only the top_k most likely tokens, clamp others to have 0 probability
     token_seq_col = 'token_seq_round_d2',
     normalize_weights_flag = False,
-    
+    emb_dtype=torch.bfloat16,
 ):
     # Batched inference based on number of edges. 
     # We group graphs with the same number of edges together
@@ -110,7 +110,7 @@ def generate_circ_from_df(
             if gemb_flag:
                 cur_graph_idx = emb_graph_id_to_idx_dict[graph_df_row['graph_id']]
                 graph_emb_dict[n_edges].append(
-                    torch.tensor(graph_emb_np[cur_graph_idx], dtype=torch.bfloat16, device=device)
+                    torch.tensor(graph_emb_np[cur_graph_idx], dtype=emb_dtype, device=device)
                 )
     
             adapt_gpt_out_dict = dict()
@@ -131,6 +131,7 @@ def generate_circ_from_df(
         
         if gemb_flag:
             cur_emb_batch_torch = torch.vstack(graph_emb_dict[n_edges])
+        #print(f"emb_dtype: {cur_emb_batch_torch.dtype}")
     
         # Calculate total samples and number of mini-batches
         total_samples = cur_batch_torch.size(0)
