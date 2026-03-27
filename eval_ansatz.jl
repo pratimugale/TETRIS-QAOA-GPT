@@ -33,6 +33,8 @@ function eval_ansatz(
         pool = ADAPT.ADAPT_QAOA.QAOApools.qaoa_mixer(n_nodes)
     elseif op_pool == "qaoa_double_pool"
         pool = ADAPT.ADAPT_QAOA.QAOApools.qaoa_double_pool(n_nodes)
+    elseif op_pool == "qaoa_nondiagonal_double_pool"
+        pool = ADAPT.ADAPT_QAOA.QAOApools.qaoa_nondiagonal_double_pool(n_nodes)
     else
         throw(error("op_pool $(op_pool) is not supported for Max-3-SAT evaluation."))
     end
@@ -74,7 +76,7 @@ function eval_ansatz(
 
     # 5. Reconstruct the Ansatz
     # We use a TetrisQAOAAnsatz for consistency with the training data generation (run_tetris.jl)
-    ansatz = ADAPT.ADAPT_QAOA.TetrisQAOAAnsatz(0.01, pool, H)
+    ansatz = ADAPT.ADAPT_QAOA.TetrisQAOAAnsatz(0.5, pool, H)
 
     for layer_ops in op_indices
         # Store current param count to mark the start of the layer for HP insertion

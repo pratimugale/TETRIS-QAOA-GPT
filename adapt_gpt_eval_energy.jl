@@ -24,9 +24,13 @@ output_fpath = ARGS[2]
 n_nodes = parse(Int, ARGS[3])
 pool_type = ARGS[4]
 
-adapt_gpt_out_list = JSON.Parser.parsefile(
-    input_fpath
-);
+adapt_gpt_input_json = JSON.parsefile(input_fpath)
+# Support both raw list and metadata-wrapped formats
+if adapt_gpt_input_json isa Dict && haskey(adapt_gpt_input_json, "data")
+    adapt_gpt_out_list = adapt_gpt_input_json["data"]
+else
+    adapt_gpt_out_list = adapt_gpt_input_json
+end
 
 iter = ProgressBar(1:length(adapt_gpt_out_list))
 
