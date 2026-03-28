@@ -35,5 +35,7 @@ pool_type = '{pool_type}'
 n_nodes = {n_nodes}
 
 # on macbook also add
-# device = 'cpu'  # run on cpu only
-# compile = False # do not torch compile the model
+# wandb logging
+wandb_log = True
+wandb_project = 'qaoa-gpt-sat-v12-standard'
+wandb_run_name = 'n12_standard_baseline'

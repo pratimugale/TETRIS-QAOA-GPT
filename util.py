@@ -124,6 +124,14 @@ def generate_circ_from_df(
                 adapt_gpt_out_dict['energy_mqlib'] = graph_df_row['energy_mqlib']
             if 'energy_gurobi' in graph_df_row:
                 adapt_gpt_out_dict['energy_gurobi'] = graph_df_row['energy_gurobi']
+            if 'formula_list' in graph_df_row:
+                # The formula is stored as a string (list of lists of integers) in the CSV
+                try:
+                    adapt_gpt_out_dict['formula_jl'] = json.loads(graph_df_row['formula_list'])
+                except:
+                    # Fallback if it's already a list
+                    adapt_gpt_out_dict['formula_jl'] = graph_df_row['formula_list']
+            
             adapt_gpt_out_dict['label'] = graph_df_row['label']
             adapt_gpt_out_list_dict[n_edges].append(adapt_gpt_out_dict)
         

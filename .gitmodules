@@ -1,6 +1,3 @@
-[submodule "ADAPT.jl"]
-	path = ADAPT.jl
-	url = https://github.com/kmsherbertvt/ADAPT.jl
 [submodule "nanoGPT"]
 	path = nanoGPT
 	url = https://github.com/karpathy/nanoGPT
