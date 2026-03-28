@@ -4,3 +4,6 @@
 [submodule "FEATHER"]
 	path = FEATHER
 	url = https://github.com/IlyaTyagin/FEATHER
+[submodule "TetrisADAPT.jl"]
+	path = TetrisADAPT.jl
+	url = git@github.com:pratimugale/TetrisADAPT.jl.git
