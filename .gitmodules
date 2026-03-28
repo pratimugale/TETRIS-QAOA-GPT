@@ -1,9 +1,9 @@
-[submodule "ADAPT.jl"]
-	path = ADAPT.jl
-	url = https://github.com/kmsherbertvt/ADAPT.jl
 [submodule "nanoGPT"]
 	path = nanoGPT
 	url = https://github.com/karpathy/nanoGPT
 [submodule "FEATHER"]
 	path = FEATHER
 	url = https://github.com/IlyaTyagin/FEATHER
+[submodule "TetrisADAPT.jl"]
+	path = TetrisADAPT.jl
+	url = git@github.com:pratimugale/TetrisADAPT.jl.git
