@@ -13,8 +13,8 @@ This repo contains code for the work: [QAOA-GPT: Efficient Generation of Adaptiv
 	2. Activate it: `conda activate adapt_gpt`
 	3. Install python dependencies: `pip install torch numpy transformers datasets tiktoken wandb ipykernel pandas tqdm networkx matplotlib joblib scipy gurobipy`
 3. ADAPT GPT codebase:
-	1. Clone this repo with its dependencies: `git clone https://github.com/IlyaTyagin/ADAPT-GPT --recurse-submodules`
-	2. `cd ADAPT-GPT/ADAPT.jl/`
+	1. Clone this repo with its dependencies: `git clone https://github.com/pratimugale/TETRIS-QAOA-GPT --recurse-submodules`
+	2. `cd TETRIS-QAOA-GPT/TetrisADAPT.jl/`
 	3. Run julia: `julia --project=.`
 	4. Install Julia dependencies. Inside julia interpreter run: `julia> using Pkg; Pkg.instantiate(); Pkg.add(["JuMP", "MQLib" , "ProgressBars", "SimpleWeightedGraphs", "CSV", "DataFrames", "JSON", "ArgParse", "Multibreak"]); Pkg.develop(path="SciPyOptimizers");` 
 
