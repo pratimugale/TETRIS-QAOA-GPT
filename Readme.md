@@ -1,6 +1,6 @@
-# QAOA-GPT
+# QAOA-GPT and TETRIS-ADAPT-QAOA for Max-E3-SAT
 
-This repo contains code for the work: [QAOA-GPT: Efficient Generation of Adaptive and Regular Quantum Approximate Optimization Algorithm Circuits](https://arxiv.org/abs/2504.16350).
+This repo contains code for the work:. It built on top of a fork of the original QAOA-GPT repo: [QAOA-GPT](https://github.com/IlyaTyagin/ADAPT-GPT).
 
 ## Quick Start Guide
 
@@ -11,7 +11,7 @@ This repo contains code for the work: [QAOA-GPT: Efficient Generation of Adaptiv
 - Python part:
 	1. Create conda environment:  `conda create -n adapt_gpt python=3.10`
 	2. Activate it: `conda activate adapt_gpt`
-	3. Install python dependencies: `pip install torch numpy transformers datasets tiktoken wandb ipykernel pandas tqdm networkx matplotlib joblib scipy gurobipy`
+	3. Install python dependencies: `pip install torch numpy transformers datasets tiktoken wandb ipykernel pandas tqdm networkx matplotlib joblib scipy gurobipy scikit-learn`
 3. ADAPT GPT codebase:
 	1. Clone this repo with its dependencies: `git clone https://github.com/pratimugale/TETRIS-QAOA-GPT --recurse-submodules`
 	2. `cd TETRIS-QAOA-GPT/TetrisADAPT.jl/`
@@ -35,18 +35,10 @@ The pipeline is run as follows:
 
 ## Data Availability 
 
-Pre-trained models that we used to generate results in our paper are available here: [Google Drive Link](https://drive.google.com/drive/folders/1ddMW1iLYlhd_Nb-ZyRFY1ktdZ9tDlNjQ).
+Pre-trained models that we used to generate results in our paper are available here: [TODO].
+
+## Tests
+Run `make test` to run all tests for helper functions and utilities.
 
 ## Citing 
 
-If you found our work useful, please cite [our paper](https://arxiv.org/abs/2504.16350) (accepted at IEEE International Conference on Quantum Computing and Engineering 2025 - QCE25, proceedings will be available later):
-
-```
-@article{tyagin2025qaoa,
-  title={QAOA-GPT: Efficient Generation of Adaptive and Regular Quantum Approximate Optimization Algorithm Circuits},
-  author={Tyagin, Ilya and Farag, Marwa H and Sherbert, Kyle and Shirali, Karunya and Alexeev, Yuri and Safro, Ilya},
-  journal={arXiv preprint arXiv:2504.16350},
-  year={2025}
-}
-
-```
