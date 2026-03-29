@@ -9,3 +9,9 @@ help:
 test-feather:
 	@echo "Running Perturbation Analysis for FEATHER embeddings..."
 	python src/qaoa-gpt/tests/feather-embeddings/test_sat_feather_embeddings.py
+
+test-evaluate-qaoa-circuits:
+	@echo "Running QAOA circuit evaluation..."
+	python src/qaoa-gpt/tests/reconstruct-qaoa-circuits.py
+	
+test: test-feather test-evaluate-qaoa-circuits
