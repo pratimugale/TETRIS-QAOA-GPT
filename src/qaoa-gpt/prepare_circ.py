@@ -164,6 +164,8 @@ combined_res_filt_df = combined_res_df[
         )
     )
 ]
+print(f"N circuits after initial coefficient filtering: {len(combined_res_filt_df)}")
+print(f"Dropped {len(combined_res_df) - len(combined_res_filt_df)} circuits due to max_abs_param_val > {max_abs_param_val}")
 
 # # We allow standard qaoa circuits for now for baseline testing.
 # if skip_only_qaoa_circ:
@@ -298,6 +300,10 @@ combined_res_filt_df[f'token_seq_round_d{rounding_digits}'] = combined_res_filt_
     axis=1,
 )
 combined_res_tok_df = combined_res_filt_df.dropna()
+n_dropped_tok = len(combined_res_filt_df) - len(combined_res_tok_df)
+print(f"N circuits after tokenization dropna: {len(combined_res_tok_df)}")
+if n_dropped_tok > 0:
+    print(f"Dropped {n_dropped_tok} circuits during tokenization (likely out of range or NaN)")
 combined_res_tok_df[f'token_int_seq_round_d{rounding_digits}'] = (
     combined_res_tok_df[f'token_seq_round_d{rounding_digits}'].progress_apply(
         lambda x: [token_to_int_idx_dict[token] for token in x]
@@ -349,6 +355,9 @@ assert len(train_formula_ids_set.intersection(test_formula_ids_set)) == 0
 assert len(val_formula_ids_set.intersection(test_formula_ids_set)) == 0
 
 def pad_with_zeros(seq, target_len):
+    # Ensure it's exactly target_len
+    if len(seq) > target_len:
+        seq = seq[:target_len]
     pad_len = target_len - len(seq)
     if pad_len > 0:
         padded_seq = seq + [0]*pad_len
@@ -360,37 +369,18 @@ def pad_with_zeros(seq, target_len):
     return padded_seq
 
 def sliding_window(numbers, min_block_size, max_block_size):
+    # NO-SLIDE Logic: We only take the very first window starting at Index 0 (bos)
+    # X is the first max_block_size tokens
+    # Y is the first max_block_size tokens, shifted by 1
+    x = numbers[:max_block_size]
+    y = numbers[1:max_block_size+1]
     
-    if min_block_size != max_block_size:
-        block_size = random.randint(min_block_size, max_block_size)
-    else:
-        block_size = min_block_size
-
-    if block_size >= len(numbers):
-        window = numbers[:-1]
-        window_shifted = numbers[1:]   
-        return [
-            [
-                pad_with_zeros(window, target_len=max_block_size),
-                pad_with_zeros(window_shifted, target_len=max_block_size)
-            ]
+    return [
+        [
+            pad_with_zeros(x, target_len=max_block_size),
+            pad_with_zeros(y, target_len=max_block_size)
         ]
-    
-    result_xy_list = []
-    result = []
-    for i in range(0, len(numbers) - block_size + 1):
-        window = numbers[i:i + block_size]
-        result.append(window)
-        
-    for x, y in zip(result, result[1:]):
-        result_xy_list.append(
-            [
-                pad_with_zeros(x, target_len=max_block_size),
-                pad_with_zeros(y, target_len=max_block_size)
-            ]
-        )
-    
-    return result_xy_list
+    ]
 
 
 # Assign the 'label' column based on the split

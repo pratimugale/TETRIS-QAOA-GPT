@@ -215,3 +215,4 @@ __marimo__/
 *.csv
 
 venv
+src/qaoa-gpt/tests/prepare_circ/results
