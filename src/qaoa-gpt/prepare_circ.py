@@ -138,6 +138,11 @@ feather_par_emb = embedder.get_embeddings(formulas_list)
     
 # Create mapping dictionary for downstream indexing using the string formula_id
 emb_formula_id_to_idx_dict = {fid: i for i, fid in enumerate(unique_formulas_df['formula_id'])}
+
+# Ensure that 'has_emb' is correctly populated for every row before the CSV is saved
+combined_res_df['has_emb'] = combined_res_df['formula_id'].apply(
+    lambda x: x in emb_formula_id_to_idx_dict
+)
     
 # Set flag for the training config
 use_graph_emb = apply_feather_graph

@@ -2,18 +2,20 @@
 # Based on https://github.com/karpathy/nanoGPT/blob/master/config/train_shakespeare_char.py
 
 out_dir = '{out_dir}'
-eval_interval = 250 # keep frequent because we'll overfit
-eval_iters = 200
-log_interval = 10 # don't print too too often
-eval_ar_every = 5000 # how often we do approx ratio evaluation (calling ADAPT.jl)
+eval_interval = 10 # Number of iterations before validation
+eval_iters = 2 # Number of batches to be evaluated from the validation set
+log_interval = 1 # don't print too too often
+eval_ar_every = 1000 # how often we do heavy approx ratio evaluation (calling ADAPT.jl)
+num_samples = 1 # Number of samples to draw during training validation
 
 # we expect to overfit on this small dataset, so only save when val improves
 always_save_checkpoint = False
 
 dataset = '{dataset}'
-gradient_accumulation_steps = 1
-batch_size = 64
-block_size = {block_size} # context of up to 256 previous characters
+data_dir = 'src/qaoa-gpt/dataset/{dataset}'
+gradient_accumulation_steps = 5
+batch_size = 512
+block_size = {block_size} # currently 512 in prepare_circ.py
 
 # baby GPT model :)
 n_layer = 6
@@ -31,9 +33,12 @@ warmup_iters = 100 # not super necessary potentially
 
 graph_emb_dim = 500 # default for FEATHER graph
 use_graph_emb = {use_graph_emb}
+eval_ar_locally = False # If True, save circuits to JSON and skip Julia evaluation
 pool_type = '{pool_type}'
 n_nodes = {n_nodes}
+rounding_digits = 2
 
-# on macbook also add
-# device = 'cpu'  # run on cpu only
-# compile = False # do not torch compile the model
+mask_formula_loss = True
+wandb_log = True
+wandb_project = 'qaoa-gpt-sat'
+wandb_run_name = 'baseline'

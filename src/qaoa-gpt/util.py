@@ -19,12 +19,13 @@ from joblib import Parallel, delayed
 def check_if_nx_graph_is_weighted(graph_nx):
     return all('weight' in graph_nx[u][v] for u, v in graph_nx.edges)
 
+# separates out the graph (here, a max3sat formula), from the circuit sequence
 def extract_graph(token_seq):
     graph_seq = []
 
     for idx, tok in enumerate(token_seq):
         graph_seq.append(tok)
-        if tok == 'end_of_graph':
+        if tok in ['end_of_graph', 'end_of_formula']:
             break
     adapt_seq = token_seq[idx+1:-1]
     return graph_seq, adapt_seq
@@ -85,6 +86,25 @@ def generate_circ_from_df(
     encode = lambda s: [stoi[c] for c in s]
     decode = lambda l: [itos[i] for i in l]
     
+    # --- CSV and Max3SAT COMPATIBILITY FIX ---
+    if 'edgelist_list_len' not in test_run_df.columns:
+        if 'n_clauses' in test_run_df.columns:
+            test_run_df['edgelist_list_len'] = test_run_df['n_clauses']
+        else:
+            # Last resort: just use a dummy '1' for grouping
+            test_run_df['edgelist_list_len'] = 1
+    
+    # Ensure columns that should be lists are actually lists (CSV loads them as strings)
+    import ast
+    for col in [token_seq_col, 'formula_list']:
+        if col in test_run_df.columns and isinstance(test_run_df[col].iloc[0], str):
+            print(f"Converting {col} from string to list...")
+            try:
+                test_run_df[col] = test_run_df[col].apply(ast.literal_eval)
+            except:
+                pass
+    # -----------------------------
+
     n_edges_to_count_dict = test_run_df['edgelist_list_len'].value_counts().to_dict()
     
     adapt_gpt_out_list_dict = defaultdict(list)
@@ -108,7 +128,8 @@ def generate_circ_from_df(
             x_list_dict[n_edges].append(x)
 
             if gemb_flag:
-                cur_graph_idx = emb_graph_id_to_idx_dict[graph_df_row['graph_id']]
+                gid_key = 'formula_id' if 'formula_id' in graph_df_row else 'graph_id'
+                cur_graph_idx = emb_graph_id_to_idx_dict[graph_df_row[gid_key]]
                 graph_emb_dict[n_edges].append(
                     torch.tensor(graph_emb_np[cur_graph_idx], dtype=emb_dtype, device=device)
                 )
@@ -119,11 +140,21 @@ def generate_circ_from_df(
             adapt_gpt_out_dict['q_circuits'] = []
             adapt_gpt_out_dict['adapt_circuit'] = adapt_seq
             adapt_gpt_out_dict['adapt_full_ar'] = graph_df_row['approx_ratio']
-            adapt_gpt_out_dict['graph_prefix'] = graph_df_row['graph_id']
+            
+            # Use formula_id if graph_id is missing
+            adapt_gpt_out_dict['graph_prefix'] = graph_df_row.get('formula_id', graph_df_row.get('graph_id', 'unknown'))
             if 'energy_mqlib' in graph_df_row:
                 adapt_gpt_out_dict['energy_mqlib'] = graph_df_row['energy_mqlib']
             if 'energy_gurobi' in graph_df_row:
                 adapt_gpt_out_dict['energy_gurobi'] = graph_df_row['energy_gurobi']
+            if 'formula_list' in graph_df_row:
+                # The formula is stored as a string (list of lists of integers) in the CSV
+                try:
+                    adapt_gpt_out_dict['formula_jl'] = json.loads(graph_df_row['formula_list'])
+                except:
+                    # Fallback if it's already a list
+                    adapt_gpt_out_dict['formula_jl'] = graph_df_row['formula_list']
+            
             adapt_gpt_out_dict['label'] = graph_df_row['label']
             adapt_gpt_out_list_dict[n_edges].append(adapt_gpt_out_dict)
         
@@ -153,6 +184,9 @@ def generate_circ_from_df(
                     mini_emb_batch = cur_emb_batch_torch[start_idx:end_idx]
                     mini_emb_batch_repeated = mini_emb_batch.repeat(num_samples, 1) # Repeat the mini-batch for num_samples
         
+                # Get eos_id from stoi if available
+                eos_id = stoi.get('eos')
+                
                 with ctx:
                     if gemb_flag:
                         y = model.generate(
@@ -160,7 +194,8 @@ def generate_circ_from_df(
                             mini_emb_batch_repeated,
                             max_new_tokens,
                             temperature=temperature,
-                            top_k=top_k
+                            top_k=top_k,
+                            eos_id=eos_id
                         )
                     else:
                         y = model.generate(
@@ -168,7 +203,8 @@ def generate_circ_from_df(
                             #mini_emb_batch_repeated,
                             max_new_tokens,
                             temperature=temperature,
-                            top_k=top_k
+                            top_k=top_k,
+                            eos_id=eos_id
                         )
         
                 # Collect results from each mini-batch
@@ -190,14 +226,18 @@ def generate_circ_from_df(
                 cur_gen_result = decode(cur_y_tensor[k].tolist())
                 cur_circ = []
                 circ_flag = 0
-                for idx, tok in enumerate(cur_gen_result):
-                    if tok == 'end_of_graph':
+                for tok in cur_gen_result:
+                    if tok in ['end_of_graph', 'end_of_formula']:
                         circ_flag = 1
+                        continue # Skip the marker itself
                     if circ_flag:
+                        if tok == 'eos':
+                            break
                         cur_circ.append(tok)
-                    if tok == 'eos':
-                        break
-                cur_adapt_gpt_out_list[graph_idx]['q_circuits'].append(cur_circ[1:-1])
+                
+                # Double check to prevent including non-circuit tokens 
+                # (in case model repeats the delimiter)
+                cur_adapt_gpt_out_list[graph_idx]['q_circuits'].append(cur_circ)
 
         ### flattening the circ list
         adapt_gpt_test_samples_list = []
@@ -220,21 +260,42 @@ def generate_circ_from_df(
     for gr_dict in adapt_gpt_test_samples_list:
         graph_jl_list = []
     
-        graph_edges_list = gr_dict['graph'][::2]
-        graph_weights_list = gr_dict['graph'][1::2]
-    
-        if normalize_weights_flag:
-            graph_w_norm = sum(graph_weights_list)
-        else:
-            graph_w_norm = 1.0
+        # Logic for weighted graphs (Max-Cut)
+        # Slicing [::2] assumes [tuple, weight, tuple, weight, ...]
+        # For SAT, this will be literal tokens like 'x1', which we should skip here
+        graph_content = gr_dict['graph']
         
-        for edge_idx, edge in enumerate(graph_edges_list):
-            cur_edge = list(edge)
-            cur_edge += [graph_weights_list[edge_idx]/graph_w_norm]
-            graph_jl_list.append(cur_edge)
-    
-        gr_dict['graph_w_jl'] = graph_jl_list
-        gr_dict['graph_weight_norm'] = graph_w_norm
+        # Check if this looks like a weighted edgelist by testing if the 2nd element is numeric
+        is_weighted_graph = False
+        if len(graph_content) >= 2:
+            try:
+                float(graph_content[1])
+                is_weighted_graph = True
+            except (ValueError, TypeError):
+                is_weighted_graph = False
+
+        if is_weighted_graph:
+            graph_edges_list = graph_content[::2]
+            graph_weights_list = graph_content[1::2]
+        
+            if normalize_weights_flag:
+                graph_w_norm = sum(float(w) for w in graph_weights_list)
+            else:
+                graph_w_norm = 1.0
+            
+            for edge_idx, edge in enumerate(graph_edges_list):
+                cur_edge = list(edge)
+                # Ensure the weight is a float
+                w = float(graph_weights_list[edge_idx])
+                cur_edge += [w / graph_w_norm]
+                graph_jl_list.append(cur_edge)
+        
+            gr_dict['graph_w_jl'] = graph_jl_list
+            gr_dict['graph_weight_norm'] = graph_w_norm
+        else:
+            # For SAT, we don't have a weighted edgelist in the sequence
+            gr_dict['graph_w_jl'] = []
+            gr_dict['graph_weight_norm'] = 1.0
 
     ## make it more error-prone
 
@@ -268,8 +329,13 @@ def eval_adapt_gpt_circ_jl(
 
     adapt_gpt_path = Path(adapt_gpt_path)
     temp_folder = Path(temp_folder)
-
-    temp_folder.mkdir(parents=True, exist_ok=True)
+    try:
+        temp_folder.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # On Google Drive FUSE mounts, mkdir can fail even if parents=True and exist_ok=True
+        if not temp_folder.exists():
+            print(f"⚠️ Warning: Could not create temp folder {temp_folder}: {e}")
+            raise e
 
     prefix = f'adapt_gpt_res_{formatted_timestamp}_df'
     in_fname = f'{prefix}.json'
@@ -283,8 +349,8 @@ def eval_adapt_gpt_circ_jl(
         orient='records'
     )
 
-    adapt_jl_path = adapt_gpt_path.joinpath('ADAPT.jl').resolve()
-    script_path = adapt_gpt_path.joinpath('adapt_gpt_eval_energy.jl').resolve()
+    adapt_jl_path = adapt_gpt_path.joinpath('TetrisADAPT.jl').resolve()
+    script_path = adapt_gpt_path.joinpath('src/qaoa-gpt/adapt_gpt_eval_energy.jl').resolve()
     process = subprocess.Popen(
         [
             "julia",
