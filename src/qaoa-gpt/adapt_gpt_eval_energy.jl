@@ -34,34 +34,29 @@ function run_evaluation()
     n_samples = length(adapt_gpt_out_list)
 
     # Dictionary to store stratified results
-    # Key: type (e.g., "balanced", "random")
-    # Value: Dict( total_ar_gpt, total_ar_actual, total_quality, n_valid, n_total )
     stratified_metrics = Dict{String, Dict{String, Any}}()
 
     for graph_idx in 1:n_samples
-        
         adapt_gpt_out_dict = adapt_gpt_out_list[graph_idx]
         formula_data = adapt_gpt_out_dict["formula_jl"];
         formula_type = get(adapt_gpt_out_dict, "type", "unknown")
         
-        # Initialize metrics for this type if not already seen
         if !haskey(stratified_metrics, formula_type)
             stratified_metrics[formula_type] = Dict(
-                "total_ar_gpt" => 0.0,
+                "total_best_ar_gpt" => 0.0,
+                "total_avg_ar_gpt" => 0.0,
                 "total_ar_actual" => 0.0,
-                "total_quality" => 0.0,
-                "n_valid" => 0,
-                "n_total" => 0
+                "n_formulas_with_valid" => 0,
+                "n_total_formulas" => 0,
+                "n_valid_circuits" => 0,
+                "n_total_circuits" => 0
             )
         end
-        stratified_metrics[formula_type]["n_total"] += 1
+        stratified_metrics[formula_type]["n_total_formulas"] += 1
 
         adapt_gpt_energies_list = []
-        
-        # 1. Evaluate GPT generated circuits (and ground truth)
         for i in 1:(length(adapt_gpt_out_dict["q_circuits"]) + 1)
             is_gpt = i <= length(adapt_gpt_out_dict["q_circuits"])
-            
             if is_gpt
                 generated_list = adapt_gpt_out_dict["q_circuits"][i]
             else
@@ -77,51 +72,66 @@ function run_evaluation()
             
             if is_gpt
                 append!(adapt_gpt_energies_list, E_final);
-                if E_final < 900
-                    stratified_metrics[formula_type]["n_valid"] += 1
-                end
             else
                 adapt_gpt_out_dict["ADAPT_energy_round"] = E_final;
             end
         end
         adapt_gpt_out_dict["adapt_gpt_energies"] = adapt_gpt_energies_list;
 
-        # 2. Performance Metrics for the sample
         n_clauses = length(formula_data)
-        e_gurobi = adapt_gpt_out_dict["energy_gurobi"]
-        e_gpt = adapt_gpt_energies_list[1]
-        e_adapt = adapt_gpt_out_dict["ADAPT_energy_round"]
-
-        is_circuit_valid = e_gpt < 900
-        if is_circuit_valid
-            ar_gpt = (n_clauses - e_gpt) / (n_clauses - e_gurobi)
-        else
-            ar_gpt = 0.0
+        e_gurobi = 0
+        if haskey(adapt_gpt_out_dict, "energy_gurobi")
+            e_gurobi = adapt_gpt_out_dict["energy_gurobi"]
+        elseif haskey(adapt_gpt_out_dict, "ground_truth_energy")
+            e_gurobi = adapt_gpt_out_dict["ground_truth_energy"]
+        elseif haskey(adapt_gpt_out_dict, "energy_mqlib")
+            e_gurobi = adapt_gpt_out_dict["energy_mqlib"]
         end
         
+        e_adapt = adapt_gpt_out_dict["ADAPT_energy_round"]
         ar_actual = (n_clauses - e_adapt) / (n_clauses - e_gurobi)
-        quality = is_circuit_valid ? (ar_gpt / ar_actual) : 0.0
 
-        stratified_metrics[formula_type]["total_ar_gpt"] += ar_gpt
+        valid_energies = filter(e -> e < 900, adapt_gpt_energies_list)
+        n_total_circuits = length(adapt_gpt_energies_list)
+        n_valid_circuits = length(valid_energies)
+
+        stratified_metrics[formula_type]["n_total_circuits"] += n_total_circuits
+        stratified_metrics[formula_type]["n_valid_circuits"] += n_valid_circuits
+
+        if n_valid_circuits > 0
+            best_e_gpt = minimum(valid_energies)
+            avg_e_gpt = sum(valid_energies) / n_valid_circuits
+            
+            ar_gpt_best = (n_clauses - best_e_gpt) / (n_clauses - e_gurobi)
+            ar_gpt_avg = (n_clauses - avg_e_gpt) / (n_clauses - e_gurobi)
+            
+            stratified_metrics[formula_type]["n_formulas_with_valid"] += 1
+            stratified_metrics[formula_type]["total_best_ar_gpt"] += ar_gpt_best
+            stratified_metrics[formula_type]["total_avg_ar_gpt"] += ar_gpt_avg
+        else
+            ar_gpt_best = 0.0
+            ar_gpt_avg = 0.0
+        end
+        
         stratified_metrics[formula_type]["total_ar_actual"] += ar_actual
-        stratified_metrics[formula_type]["total_quality"] += quality
 
         adapt_gpt_out_dict["result_quality"] = Dict(
-            "ar_qaoa_gpt" => ar_gpt,
+            "best_ar_qaoa_gpt" => ar_gpt_best,
+            "avg_ar_qaoa_gpt" => ar_gpt_avg,
             "ar_qaoa_actual" => ar_actual,
-            "circuit_quality" => quality,
             "n_clauses" => n_clauses,
-            "is_valid" => is_circuit_valid
+            "sample_svr" => n_total_circuits > 0 ? (n_valid_circuits / n_total_circuits) : 0.0
         )
 
-        println("\n--- Performance Metrics (Sample $(graph_idx), Type: $(formula_type)) ---")
-        println("Formula Clauses: $n_clauses")
-        if is_circuit_valid
-            println("AR QAOA GPT: $(round(ar_gpt * 100, digits=2))%")
-            println("AR QAOA Actual (ADAPT): $(round(ar_actual * 100, digits=2))%")
-            println("Circuit Quality (GPT/Actual): $(round(quality * 100, digits=2))%")
+        println("\n--- Performance Metrics (Formula $(graph_idx), Type: $(formula_type)) ---")
+        println("Formula Clauses: $n_clauses | Samples generated: $n_total_circuits")
+        println("Valid Circuits: $n_valid_circuits / $n_total_circuits")
+        if n_valid_circuits > 0
+            println("Best AR QAOA GPT: $(round(ar_gpt_best * 100, digits=2))%")
+            println("Avg  AR QAOA GPT: $(round(ar_gpt_avg * 100, digits=2))%")
+            println("AR QAOA Actual:   $(round(ar_actual * 100, digits=2))%")
         else
-            println("AR QAOA GPT: [INVALID CIRCUIT - FAILS PARSE]")
+            println("AR QAOA GPT: [ALL CIRCUITS INVALID]")
         end
         flush(stdout)
     end
@@ -131,52 +141,79 @@ function run_evaluation()
     println("FINAL STRATIFIED SUMMARY")
     println("="^60)
     
-    # Sort types if possible
     types = sort(collect(keys(stratified_metrics)))
     
-    total_samples = 0
-    global_total_ar_gpt = 0.0
+    global_n_f = 0
+    global_n_f_v = 0
+    global_n_c = 0
+    global_n_c_v = 0
+    global_total_best_ar = 0.0
+    global_total_avg_ar = 0.0
     global_total_ar_actual = 0.0
-    global_total_quality = 0.0
-    global_n_valid = 0
 
     for t in types
         m = stratified_metrics[t]
-        n_t = m["n_total"]
-        n_v = m["n_valid"]
-        svr = (n_v / n_t) * 100
-        avg_ar_gpt_val = n_v > 0 ? (m["total_ar_gpt"] / n_v) : 0.0
-        avg_ar_gpt_all = m["total_ar_gpt"] / n_t
-        avg_ar_actual = m["total_ar_actual"] / n_t
-        avg_quality = m["total_quality"] / n_t
+        n_f = m["n_total_formulas"]
+        n_f_v = m["n_formulas_with_valid"]
+        n_c = m["n_total_circuits"]
+        n_c_v = m["n_valid_circuits"]
         
-        println("TYPE: $(uppercase(t)) ($(n_t) samples)")
+        avg_svr = n_c > 0 ? (n_c_v / n_c) * 100 : 0.0
+        best_svr = n_f > 0 ? (n_f_v / n_f) * 100 : 0.0
+        
+        avg_er = 100.0 - avg_svr
+        best_er = 100.0 - best_svr
+        
+        best_ar_val = n_f_v > 0 ? (m["total_best_ar_gpt"] / n_f_v) : 0.0
+        best_ar_all = n_f > 0 ? (m["total_best_ar_gpt"] / n_f) : 0.0
+        
+        avg_ar_val = n_f_v > 0 ? (m["total_avg_ar_gpt"] / n_f_v) : 0.0
+        avg_ar_all = n_f > 0 ? (m["total_avg_ar_gpt"] / n_f) : 0.0
+        
+        avg_ar_act = n_f > 0 ? (m["total_ar_actual"] / n_f) : 0.0
+        
+        println("TYPE: $(uppercase(t)) ($(n_f) formulas)")
         println("-"^30)
-        println("Avg AR QAOA GPT (Valid Only): $(round(avg_ar_gpt_val * 100, digits=2))%")
-        println("Avg AR QAOA GPT (Overall):    $(round(avg_ar_gpt_all * 100, digits=2))%")
-        println("Avg AR QAOA Actual:           $(round(avg_ar_actual * 100, digits=2))%")
-        println("Avg Circuit Quality:          $(round(avg_quality * 100, digits=2))%")
-        println("Structural Validity (SVR):     $(round(svr, digits=2))%")
+        println("Best ER (Formula failure): $(round(best_er, digits=2))%")
+        println("Avg  ER (Circuit failure): $(round(avg_er, digits=2))%")
+        println("Best AR QAOA GPT (Valid):  $(round(best_ar_val * 100, digits=2))%")
+        println("Best AR QAOA GPT (All):    $(round(best_ar_all * 100, digits=2))%")
+        println("Avg  AR QAOA GPT (Valid):  $(round(avg_ar_val * 100, digits=2))%")
+        println("Avg  AR QAOA GPT (All):    $(round(avg_ar_all * 100, digits=2))%")
+        println("AR QAOA Actual:            $(round(avg_ar_act * 100, digits=2))%")
         println("-"^30)
         
-        # Aggregate to global
-        total_samples += n_t
-        global_total_ar_gpt += m["total_ar_gpt"]
+        global_n_f += n_f
+        global_n_f_v += n_f_v
+        global_n_c += n_c
+        global_n_c_v += n_c_v
+        global_total_best_ar += m["total_best_ar_gpt"]
+        global_total_avg_ar += m["total_avg_ar_gpt"]
         global_total_ar_actual += m["total_ar_actual"]
-        global_total_quality += m["total_quality"]
-        global_n_valid += n_v
     end
 
-    if total_samples > 1
-        println("\nGLOBAL SUMMARY ($(total_samples) samples)")
+    if global_n_f > 1
+        println("\nGLOBAL SUMMARY ($(global_n_f) formulas, $(global_n_c) circuits)")
         println("-"^30)
-        global_avg_ar_gpt_val = global_n_valid > 0 ? (global_total_ar_gpt / global_n_valid) : 0.0
-        global_avg_ar_gpt_all = global_total_ar_gpt / total_samples
+        global_avg_svr = (global_n_c_v / global_n_c) * 100
+        global_best_svr = (global_n_f_v / global_n_f) * 100
         
-        println("Avg AR QAOA GPT (Valid Only): $(round(global_avg_ar_gpt_val * 100, digits=2))%")
-        println("Avg AR QAOA GPT (Overall):    $(round(global_avg_ar_gpt_all * 100, digits=2))%")
-        println("Avg AR QAOA Actual:           $(round(global_total_ar_actual/total_samples * 100, digits=2))%")
-        println("Structural Validity (SVR):     $(round((global_n_valid/total_samples)*100, digits=2))%")
+        global_avg_er = 100.0 - global_avg_svr
+        global_best_er = 100.0 - global_best_svr
+        
+        g_best_ar_val = global_n_f_v > 0 ? (global_total_best_ar / global_n_f_v) : 0.0
+        g_best_ar_all = global_total_best_ar / global_n_f
+        
+        g_avg_ar_val = global_n_f_v > 0 ? (global_total_avg_ar / global_n_f_v) : 0.0
+        g_avg_ar_all = global_total_avg_ar / global_n_f
+        
+        println("Best ER (Formula failure): $(round(global_best_er, digits=2))%")
+        println("Avg  ER (Circuit failure): $(round(global_avg_er, digits=2))%")
+        println("Best AR QAOA GPT (Valid):  $(round(g_best_ar_val * 100, digits=2))%")
+        println("Best AR QAOA GPT (All):    $(round(g_best_ar_all * 100, digits=2))%")
+        println("Avg  AR QAOA GPT (Valid):  $(round(g_avg_ar_val * 100, digits=2))%")
+        println("Avg  AR QAOA GPT (All):    $(round(g_avg_ar_all * 100, digits=2))%")
+        println("AR QAOA Actual:            $(round((global_total_ar_actual/global_n_f) * 100, digits=2))%")
     end
     println("="^60)
 
