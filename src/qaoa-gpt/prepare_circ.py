@@ -157,12 +157,13 @@ emb_formula_idx_to_id_dict = {i: fid for fid, i in emb_formula_id_to_idx_dict.it
 print("Selecting suitable ansatz...")
 
 combined_res_filt_df = combined_res_df[
-    (
-        combined_res_df['β_coeff'].apply(
-            lambda x: all([abs(coef) < max_abs_param_val for coef in x])
-        )
-    )
-    &
+    # The betas are handled by julia_mod. The gammas are not modded as they break the circuits 
+    # (
+    #     combined_res_df['β_coeff'].apply(
+    #         lambda x: all([abs(coef) < max_abs_param_val for coef in x])
+    #     )
+    # )
+    # &
     (
         combined_res_df['γ_coeff'].apply(
             lambda x: all([abs(coef) < max_abs_param_val for coef in x])
