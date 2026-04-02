@@ -159,10 +159,6 @@ def clean_circ(tokens):
 print(f"[4/5] Generating {args.n_samples} circuits for each of {len(idx_list)} test instances …")
 all_samples = []
 
-# For Variance Analysis
-all_gt_gammas, all_gt_betas = [], []
-all_gpt_gammas, all_gpt_betas = [], []
-
 ptdtype = torch.bfloat16 if device_type == 'cuda' else torch.float32
 from contextlib import nullcontext
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
@@ -235,15 +231,6 @@ for sample_i in tqdm(range(len(idx_list))):
     formula_list = row['formula_list']
     if isinstance(formula_list, str):
         formula_list = ast.literal_eval(formula_list)
-
-    # Variance Analysis Extraction
-    gt_clean = clean_circ(gt_circuit_raw)
-    all_gt_betas.extend([x for x in gt_clean[2::4] if isinstance(x, (int, float))])
-    all_gt_gammas.extend([x for x in gt_clean[3::4] if isinstance(x, (int, float))])
-    
-    for qc in q_circs:
-        all_gpt_betas.extend([x for x in qc[2::4] if isinstance(x, (int, float))])
-        all_gpt_gammas.extend([x for x in qc[3::4] if isinstance(x, (int, float))])
 
     # Use the filename from the metadata to lookup runtime
     filename = str(row.get('filename', ''))
@@ -343,30 +330,3 @@ summary_df.to_csv(summary_path, index=False)
 print(f"\nPer-formula results saved to {summary_path}")
 print(f"Full Julia output saved to   {out_json}")
 
-# ── Parameter Variance Plotting ───────────────────────────────────────────────
-if all_gt_gammas and all_gpt_gammas:
-    print("\n[Plotting] Generating parameter distribution comparison …")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    
-    # Gamma distribution
-    axes[0].boxplot([all_gt_gammas, all_gpt_gammas], labels=['Ground Truth', 'QAOA-GPT'])
-    axes[0].set_title('Gamma Coefficients (γ)')
-    axes[0].grid(True, alpha=0.3)
-    
-    # Beta distribution
-    axes[1].boxplot([all_gt_betas, all_gpt_betas], labels=['Ground Truth', 'QAOA-GPT'])
-    axes[1].set_title('Beta Coefficients (β)')
-    axes[1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plot_path = os.path.join(args.out_dir, 'parameter_distributions.png')
-    plt.savefig(plot_path, dpi=200)
-    print(f"Plot saved to {plot_path}")
-
-    # Print distribution stats
-    print(f"\n{'Parameter':<15} {'Source':<15} {'Mean':>10} {'Std':>10}")
-    print("-" * 52)
-    print(f"{'Gamma (γ)':<15} {'Ground Truth':<15} {np.mean(all_gt_gammas):>10.4f} {np.std(all_gt_gammas):>10.4f}")
-    print(f"{'Gamma (γ)':<15} {'QAOA-GPT':<15} {np.mean(all_gpt_gammas):>10.4f} {np.std(all_gpt_gammas):>10.4f}")
-    print(f"{'Beta  (β)':<15} {'Ground Truth':<15} {np.mean(all_gt_betas):>10.4f} {np.std(all_gt_betas):>10.4f}")
-    print(f"{'Beta  (β)':<15} {'QAOA-GPT':<15} {np.mean(all_gpt_betas):>10.4f} {np.std(all_gpt_betas):>10.4f}")

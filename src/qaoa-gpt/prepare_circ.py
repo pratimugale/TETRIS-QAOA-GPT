@@ -40,6 +40,7 @@ parser.add_argument('--apply_sliding_window', type=bool, default=True, action=ar
 parser.add_argument('--apply_feather_graph', type=bool, default=True, action=argparse.BooleanOptionalAction, help='Apply feather graph to generate graph embeddings')
 parser.add_argument('--n_workers', type=int, default=1, help='Number of workers to use to process ADAPT results')
 parser.add_argument('--skip_only_qaoa_circ', type=bool, default=False, action=argparse.BooleanOptionalAction, help='Exclude circuits with only QAOA mixer present')
+parser.add_argument('--pool_type', type=str, default=None, help='ADAPT pool type (e.g. qaoa_mixer, qaoa_nondiagonal_double_pool)')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -101,8 +102,9 @@ combined_res_df['approx_ratio'] = (combined_res_df['n_clauses'] - combined_res_d
 
 # Dummy prefix/id for legacy logic
 combined_res_df['prefix'] = 'sat' # not exactly needed but can be kept for compatibility with old code, in case if needed in the future
-if 'pooltype' not in combined_res_df.columns:
-    # TODO: this can be passed in the arguments of this script instead of hard coding
+if args.pool_type:
+    combined_res_df['pooltype'] = args.pool_type
+elif 'pooltype' not in combined_res_df.columns:
     combined_res_df['pooltype'] = 'qaoa_mixer'
 if 'n_nodes' not in combined_res_df.columns:
     combined_res_df['n_nodes'] = args.n_nodes
@@ -232,15 +234,15 @@ print(f"\tTotal tokens for coefs: {len(all_coefs_round_set)}")
 
 ## Operator pool
 ops_list = []
-for l in combined_res_filt_df['op_list']:
-    # TODO: currently this logic only works for standard-QAOA mixer circuits. 
-    #  this needs to be further modified for tetris-style circuits by zipping the 
-    #  operator indices with the corresponding beta coefficients.
-    if isinstance(l[0], list):
-        for sub_l in l:
-            ops_list += sub_l
+for row_ops in combined_res_filt_df['op_list']:
+    # Support both flat standard-QAOA and nested Tetris-QAOA operator lists
+    if isinstance(row_ops, list) and len(row_ops) > 0 and isinstance(row_ops[0], list):
+        # Nested format: [[layer1_ops], [layer2_ops], ...]
+        for layer_ops in row_ops:
+            ops_list += layer_ops
     else:
-        ops_list += l
+        # Flat format: [op1, op2, ...]
+        ops_list += row_ops
 
 ops_list = list(set([f"op_{op}" for op in ops_list]))
 print(f"\tTotal tokens for operator pool: {len(ops_list)}")
@@ -271,34 +273,47 @@ def tokenize_row(row, coef_mod=True):
         tokens_seq_list.append('|')
     tokens_seq_list.append('end_of_formula')
 
+    # Tetris-aware circuit tokenization
+    # Logic: [new_layer_p, op1, beta1, op2, beta2, ..., gamma]
+    beta_ptr = 0
     for p in range(row['n_layers']):
         tokens_seq_list.append('new_layer_p')
-        # TODO: currently this logic only works for standard-QAOA mixer circuits. 
-        #  this needs to be further modified for tetris-style circuits by zipping the 
-        #  operator indices with the corresponding beta coefficients.
-        op_val = row['op_list'][p]
-        if isinstance(op_val, list):
-            op_val = op_val[0] 
-        tokens_seq_list.append(f"op_{op_val}")
+        
+        layer_ops = row['op_list'][p]
+        if not isinstance(layer_ops, (list, np.ndarray)):
+            layer_ops = [layer_ops]
+            
+        for op_idx in layer_ops:
+            tokens_seq_list.append(f"op_{op_idx}")
+            
+            # Extract and round beta coefficient
+            try:
+                cur_beta = row['β_coeff'][beta_ptr]
+                beta_ptr += 1
+            except IndexError:
+                # Handle cases where beta_coeffs might be shorter than ops count
+                return None
+                
+            if coef_mod:
+                cur_beta = julia_mod(cur_beta, np.pi)
+            
+            if abs(cur_beta) >= max_abs_param_val:
+                return None
+            
+            tokens_seq_list.append(round(cur_beta, rounding_digits))
 
-        cur_beta = row['β_coeff'][p]
-        if coef_mod:
-            cur_beta = julia_mod(cur_beta, np.pi)
-        if cur_beta > -max_abs_param_val and cur_beta < max_abs_param_val:
-            cur_beta_round = round(cur_beta, rounding_digits)
-            tokens_seq_list.append(cur_beta_round)
-        else:
+        # Each layer ends with exactly one gamma coefficient
+        try:
+            cur_gamma = row['γ_coeff'][p]
+        except IndexError:
             return None
-
-        cur_gamma = row['γ_coeff'][p]
-        if cur_gamma > -max_abs_param_val and cur_gamma < max_abs_param_val:
-            cur_gamma_round = round(cur_gamma, rounding_digits)
-            tokens_seq_list.append(cur_gamma_round)
-        else:
+            
+        if abs(cur_gamma) >= max_abs_param_val:
             return None
+            
+        tokens_seq_list.append(round(cur_gamma, rounding_digits))
     
     tokens_seq_list.append('eos')
-    
     return tokens_seq_list
 
 combined_res_filt_df[f'token_seq_round_d{rounding_digits}'] = combined_res_filt_df.progress_apply(
