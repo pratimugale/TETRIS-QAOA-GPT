@@ -219,3 +219,4 @@ src/qaoa-gpt/tests/prepare_circ/results
 src/qaoa-gpt/dataset
 logs
 *.pt
+slurm
