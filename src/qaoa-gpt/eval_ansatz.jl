@@ -17,7 +17,7 @@ end
 
 Evaluate the energy of a quantum circuit against a Max-3-SAT Hamiltonian.
 - `formula_data`: List of lists of dictionaries representing the Max-3-SAT formula.
-- `q_circuit`: Flattened list of predicted tokens [new_layer, op_idx, gamma, beta, ...].
+- `q_circuit`: Flattened list of predicted tokens in Tetris format
 - `n_nodes`: Number of qubits (variables).
 - `op_pool`: Name of the operator pool.
 """
@@ -56,21 +56,63 @@ function eval_ansatz(
     
     generated_list = q_circuit
     
-    # 4. Extract operators and angles from the circuit list
-    # Format: [new_layer_p, op_idx, gamma, beta, ...]
-    # We step by 4 because each layer consists of 4 tokens in the current QAOA-GPT format
-    for j in 1:4:length(generated_list)
-        # Handle cases where the sequence might be truncated
-        if j + 3 > length(generated_list)
-            break
+    # 4. Extract operators and angles (State-Machine Parser)
+    i = 1
+    while i <= length(generated_list)
+        if generated_list[i] == "new_layer_p"
+            i += 1
+            # Find the next layer marker or end of list
+            next_marker = i
+            while next_marker <= length(generated_list) && generated_list[next_marker] != "new_layer_p"
+                next_marker += 1
+            end
+            
+            # The tokens for this layer
+            layer_tokens = generated_list[i:next_marker-1]
+            if length(layer_tokens) >= 3 # Min: [op1, beta1, gamma]
+                # Last token MUST be a float (gamma)
+                gamma_token = layer_tokens[end]
+                if !(gamma_token isa Number)
+                    error("Malformed layer: Final token in layer $(layer_tokens) is not a numeric gamma.")
+                end
+                push!(gammas, Float64(gamma_token))
+                
+                # Preceding tokens MUST be pairs of (Int op, Number beta)
+                op_beta_pairs = layer_tokens[1:end-1]
+                if length(op_beta_pairs) % 2 != 0
+                    error("Malformed layer: Found odd number of tokens $(op_beta_pairs) before gamma. Expected (op, beta) pairs.")
+                end
+                
+                layer_ops = Int[]
+                for k in 1:2:length(op_beta_pairs)
+                    op_idx = op_beta_pairs[k]
+                    beta_val = op_beta_pairs[k+1]
+                    
+                    if !(op_idx isa Integer) || !(beta_val isa Number)
+                        error("Malformed layer: Invalid (op, beta) pair: ($op_idx, $beta_val)")
+                    end
+                    
+                    push!(layer_ops, Int(op_idx))
+                    push!(betas, Float64(beta_val))
+                end
+                push!(op_indices, layer_ops)
+            else
+                if length(layer_tokens) > 0
+                    error("Malformed layer: Layer sequence $(layer_tokens) is too short.")
+                end
+            end
+            i = next_marker
+        else
+            # Ignore stray tokens until we hit a marker
+            i += 1
         end
-        
-        push!(op_indices, generated_list[j+1])
-        push!(betas, generated_list[j+2])   # Beta
-        push!(gammas, generated_list[j+3])  # Gamma
     end
 
-    # TetrisQAOAAnsatz expects all gammas followed by all betas
+    if length(gammas) == 0
+        error("No valid layers found in circuit.")
+    end
+
+    # Flatten angles for ADAPT.bind! [gammas..., betas...]
     angles = vcat(gammas, betas)
 
     # 5. Reconstruct the Ansatz
@@ -82,12 +124,7 @@ function eval_ansatz(
     for layer_ops in op_indices
         # Store current param count to mark the start of the layer for HP insertion
         p_current = length(ansatz.parameters)
-        
-        # Handle cases where op_idx might be a single int or a list of ints
-        idxs = layer_ops isa AbstractVector ? layer_ops : [layer_ops]
-        
-        for op_idx in idxs
-            # Check if the predicted index is valid for the pool
+        for op_idx in layer_ops
             if op_idx > length(pool) || op_idx < 1
                  error("Predicted operator index $(op_idx) is out of bounds for pool of size $(length(pool)).")
             end
