@@ -82,6 +82,8 @@ def run_reproduce_test():
     with open(in_json, "w") as f:
         json.dump(eval_input, f)
 
+    print(json.dumps(eval_input))
+
     julia_cmd = [
         "julia",
         "-t", "2",
