@@ -1,18 +1,17 @@
-# QAOA-GPT and TETRIS-ADAPT-QAOA for Max-E3-SAT
+# Q3SAT-GPT
 
-This repo contains code for the work:. It built on top of a fork of the original QAOA-GPT repo: [QAOA-GPT](https://github.com/IlyaTyagin/ADAPT-GPT).
+This repo contains code for Q3SAT-GPT. It built on top of a fork of the original QAOA-GPT repo: [QAOA-GPT](https://github.com/IlyaTyagin/ADAPT-GPT).
 
 ## Quick Start Guide
 
 **Installing**:
 - Julia part:
 	1. Install Julia: https://julialang.org/downloads/ 
-	2. For your convenience, you can also add Julia kernel to your Jupyter: https://julialang.github.io/IJulia.jl/stable/manual/installation/ (Julia notebooks are not used in this repo, but can be handy for debugging)
 - Python part:
 	1. Create conda environment:  `conda create -n adapt_gpt python=3.10`
 	2. Activate it: `conda activate adapt_gpt`
 	3. Install python dependencies: `pip install torch numpy transformers datasets tiktoken wandb ipykernel pandas tqdm networkx matplotlib joblib scipy gurobipy scikit-learn`
-3. ADAPT GPT codebase:
+3. [MosaicADAPT-QAOA](https://github.com/pratimugale/TetrisADAPT.jl):
 	1. Clone this repo with its dependencies: `git clone https://github.com/pratimugale/TETRIS-QAOA-GPT --recurse-submodules`
 	2. `cd TETRIS-QAOA-GPT/TetrisADAPT.jl/`
 	3. Run julia: `julia --project=.`
