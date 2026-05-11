@@ -91,7 +91,7 @@ def run_tests():
         "julia",
         "-t", "2",
         "--project=ADAPT.jl", 
-        "src/qaoa-gpt/adapt_gpt_eval_energy.jl",
+        "src/qaoa_gpt/adapt_gpt_eval_energy.jl",
         in_json,
         out_json,
         str(n_nodes),

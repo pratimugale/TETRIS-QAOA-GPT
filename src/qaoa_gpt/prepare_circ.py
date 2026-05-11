@@ -1,11 +1,10 @@
 # This script:
-# 1. Loads the optimized_circuits.csv file
+# 1. Splits the dataset into train test val sets.
 # 2. Tokenizes the formula and the circuit
 # 3. Applies sliding window to generate training samples (in the case of max-3-sat, since the max_block_size,
 #  that we use is large (512), the sliding window will just create one sample per circuit - this will 
 #  completely self contain the input formula and the output circuit.)
 # 4. Generates graph embeddings for the formulas
-# 5. Saves the training, validation, and test sets
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -21,6 +20,8 @@ from joblib import Parallel, delayed
 from lcg_feather import SATGraphEmbedder
 import ast
 import pickle
+from tokenization import tokenize_formula
+from sklearn.model_selection import train_test_split
 
 tqdm.pandas()
 
@@ -31,7 +32,7 @@ parser.add_argument('--save_dir', type=str, help='Path to save files', required=
 parser.add_argument('--n_nodes', type=int, help='Number of nodes in the dataset', required=True)
 parser.add_argument('--rounding_digits', type=int, default=2, help='Number of digits to round to')
 parser.add_argument('--min_block_size', type=int, default=128, help='min sequence length in sliding window') #TODO: do we need this?
-parser.add_argument('--max_block_size', type=int, default=512, help='nanoGPT block size')
+parser.add_argument('--max_block_size', type=int, default=1024, help='nanoGPT block size')
 parser.add_argument('--val_frac', type=float, default=0.1, help='Validation fraction')
 parser.add_argument('--test_frac', type=float, default=0.1, help='Test fraction')
 parser.add_argument('--max_abs_param_val', type=float, default=10, help='Maximum absolute value of gamma and beta params')
@@ -40,6 +41,7 @@ parser.add_argument('--apply_sliding_window', type=bool, default=True, action=ar
 parser.add_argument('--apply_feather_graph', type=bool, default=True, action=argparse.BooleanOptionalAction, help='Apply feather graph to generate graph embeddings')
 parser.add_argument('--n_workers', type=int, default=1, help='Number of workers to use to process ADAPT results')
 parser.add_argument('--skip_only_qaoa_circ', type=bool, default=False, action=argparse.BooleanOptionalAction, help='Exclude circuits with only QAOA mixer present')
+parser.add_argument('--pool_type', type=str, default=None, help='ADAPT pool type (e.g. qaoa_mixer, qaoa_nondiagonal_double_pool)')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -101,8 +103,9 @@ combined_res_df['approx_ratio'] = (combined_res_df['n_clauses'] - combined_res_d
 
 # Dummy prefix/id for legacy logic
 combined_res_df['prefix'] = 'sat' # not exactly needed but can be kept for compatibility with old code, in case if needed in the future
-if 'pooltype' not in combined_res_df.columns:
-    # TODO: this can be passed in the arguments of this script instead of hard coding
+if args.pool_type:
+    combined_res_df['pooltype'] = args.pool_type
+elif 'pooltype' not in combined_res_df.columns:
     combined_res_df['pooltype'] = 'qaoa_mixer'
 if 'n_nodes' not in combined_res_df.columns:
     combined_res_df['n_nodes'] = args.n_nodes
@@ -119,6 +122,41 @@ combined_res_df['formula_id'] = (
 )
 
 print(combined_res_df['formula_method'].value_counts())
+
+# We now do a stratified split based on is_sat and formula_method
+# NOTE: This assumes that there will always be only one circuit per formula 
+# in the dataset (after the grid search).
+print("Performing stratified split...")
+# Create a stratification key
+combined_res_df['stratify_key'] = combined_res_df['is_sat'].astype(str) + "_" + combined_res_df['formula_method']
+
+# Perform the split on the entire dataset (before filtering/tokenization) 
+# to prevent preprocessing from affecting the split distribution.
+train_idx_init, val_test_idx_init = train_test_split(
+    combined_res_df.index,
+    test_size=(val_frac + test_frac),
+    stratify=combined_res_df['stratify_key'],
+    random_state=42
+)
+
+val_idx_init, test_idx_init = train_test_split(
+    val_test_idx_init, 
+    test_size=(test_frac / (val_frac + test_frac)), 
+    stratify=combined_res_df.loc[val_test_idx_init, 'stratify_key'],
+    random_state=42
+)
+
+combined_res_df['label'] = 'train'
+combined_res_df.loc[val_idx_init, 'label'] = 'val'
+combined_res_df.loc[test_idx_init, 'label'] = 'test'
+
+# Verification of split integrity (ensuring no formula leakage)
+train_formulas = set(combined_res_df.loc[train_idx_init, 'formula_id'])
+val_formulas = set(combined_res_df.loc[val_idx_init, 'formula_id'])
+test_formulas = set(combined_res_df.loc[test_idx_init, 'formula_id'])
+assert len(train_formulas.intersection(val_formulas)) == 0
+assert len(train_formulas.intersection(test_formulas)) == 0
+assert len(val_formulas.intersection(test_formulas)) == 0
 
 #-----------------------#
 # Graph embedding
@@ -156,7 +194,13 @@ emb_formula_idx_to_id_dict = {i: fid for fid, i in emb_formula_id_to_idx_dict.it
 # Filtering 
 print("Selecting suitable ansatz...")
 
+# We do not want to filter the test data based on the adapt parameters
+# as we want the entire and same test set across all trained models.
+# If circuits are found after a grid search, they may have different 
+# gammas and betas, leading to the test set being different across grid search vs 
+# single gamma=0.5. 
 combined_res_filt_df = combined_res_df[
+    (combined_res_df['label'] == 'test') |
     # The betas are handled by julia_mod. The gammas are not modded as they break the circuits 
     # (
     #     combined_res_df['β_coeff'].apply(
@@ -173,15 +217,6 @@ combined_res_filt_df = combined_res_df[
 print(f"N circuits after initial coefficient filtering: {len(combined_res_filt_df)}")
 print(f"Dropped {len(combined_res_df) - len(combined_res_filt_df)} circuits due to max_abs_param_val > {max_abs_param_val}")
 
-# # We allow standard qaoa circuits for now for baseline testing.
-# if skip_only_qaoa_circ:
-#     print("Filtering out only QAOA circuits...")
-#     n_only_qaoa_circ = combined_res_filt_df['only_qaoa_circ'].sum()
-#     print(f"Removing {n_only_qaoa_circ} out of total {len(combined_res_filt_df)}")
-#     combined_res_filt_df = combined_res_filt_df[
-#         combined_res_filt_df['only_qaoa_circ'] == False
-#     ]
-    
 
 #-----------------------#
 # Tokenization
@@ -232,15 +267,15 @@ print(f"\tTotal tokens for coefs: {len(all_coefs_round_set)}")
 
 ## Operator pool
 ops_list = []
-for l in combined_res_filt_df['op_list']:
-    # TODO: currently this logic only works for standard-QAOA mixer circuits. 
-    #  this needs to be further modified for tetris-style circuits by zipping the 
-    #  operator indices with the corresponding beta coefficients.
-    if isinstance(l[0], list):
-        for sub_l in l:
-            ops_list += sub_l
+for row_ops in combined_res_filt_df['op_list']:
+    # Support both flat standard-QAOA and nested Tetris-QAOA operator lists
+    if isinstance(row_ops, list) and len(row_ops) > 0 and isinstance(row_ops[0], list):
+        # Nested format: [[layer1_ops], [layer2_ops], ...]
+        for layer_ops in row_ops:
+            ops_list += layer_ops
     else:
-        ops_list += l
+        # Flat format: [op1, op2, ...]
+        ops_list += row_ops
 
 ops_list = list(set([f"op_{op}" for op in ops_list]))
 print(f"\tTotal tokens for operator pool: {len(ops_list)}")
@@ -257,48 +292,66 @@ def julia_mod(a, b):
     result = a % b
     return result if a >= 0 else result - b
 
+beta_clip_count = 0
+gamma_clip_count = 0
 def tokenize_row(row, coef_mod=True):
-
+    global beta_clip_count
+    global gamma_clip_count
     tokens_seq_list = ['bos']
 
     # SAT formula tokenization
-    for clause in row['formula_list']:
-        for lit in clause:
-            if lit > 0:
-                tokens_seq_list.append(f"x{lit}")
-            else:
-                tokens_seq_list.append(f"~x{abs(lit)}")
-        tokens_seq_list.append('|')
-    tokens_seq_list.append('end_of_formula')
+    tokens_seq_list.extend(tokenize_formula(row['formula_list']))
 
+    # Tetris-aware circuit tokenization
+    # Logic: [new_layer_p, op1, beta1, op2, beta2, ..., gamma]
+    beta_ptr = 0
     for p in range(row['n_layers']):
         tokens_seq_list.append('new_layer_p')
-        # TODO: currently this logic only works for standard-QAOA mixer circuits. 
-        #  this needs to be further modified for tetris-style circuits by zipping the 
-        #  operator indices with the corresponding beta coefficients.
-        op_val = row['op_list'][p]
-        if isinstance(op_val, list):
-            op_val = op_val[0] 
-        tokens_seq_list.append(f"op_{op_val}")
+        
+        layer_ops = row['op_list'][p]
+        if not isinstance(layer_ops, (list, np.ndarray)):
+            layer_ops = [layer_ops]
+            
+        for op_idx in layer_ops:
+            tokens_seq_list.append(f"op_{op_idx}")
+            
+            # Extract and round beta coefficient
+            try:
+                cur_beta = row['β_coeff'][beta_ptr]
+                beta_ptr += 1
+            except IndexError:
+                # Handle cases where beta_coeffs might be shorter than ops count
+                return None
+                
+            if coef_mod:
+                cur_beta = julia_mod(cur_beta, np.pi)
+            
+            if abs(cur_beta) >= max_abs_param_val:
+                if row['label'] == 'test':
+                    cur_beta = max_abs_param_val if cur_beta > 0 else -max_abs_param_val
+                    beta_clip_count += 1
+                else:
+                    return None
+            
+            tokens_seq_list.append(round(cur_beta, rounding_digits))
 
-        cur_beta = row['β_coeff'][p]
-        if coef_mod:
-            cur_beta = julia_mod(cur_beta, np.pi)
-        if cur_beta > -max_abs_param_val and cur_beta < max_abs_param_val:
-            cur_beta_round = round(cur_beta, rounding_digits)
-            tokens_seq_list.append(cur_beta_round)
-        else:
+        # Each layer ends with exactly one gamma coefficient
+        try:
+            cur_gamma = row['γ_coeff'][p]
+        except IndexError:
             return None
-
-        cur_gamma = row['γ_coeff'][p]
-        if cur_gamma > -max_abs_param_val and cur_gamma < max_abs_param_val:
-            cur_gamma_round = round(cur_gamma, rounding_digits)
-            tokens_seq_list.append(cur_gamma_round)
-        else:
-            return None
+            
+        if abs(cur_gamma) >= max_abs_param_val:
+            if row['label'] == 'test':
+                print(f"original gamma: {cur_gamma}")
+                cur_gamma = max_abs_param_val if cur_gamma > 0 else -max_abs_param_val
+                gamma_clip_count += 1
+            else:
+                return None
+            
+        tokens_seq_list.append(round(cur_gamma, rounding_digits))
     
     tokens_seq_list.append('eos')
-    
     return tokens_seq_list
 
 combined_res_filt_df[f'token_seq_round_d{rounding_digits}'] = combined_res_filt_df.progress_apply(
@@ -310,55 +363,44 @@ n_dropped_tok = len(combined_res_filt_df) - len(combined_res_tok_df)
 print(f"N circuits after tokenization dropna: {len(combined_res_tok_df)}")
 if n_dropped_tok > 0:
     print(f"Dropped {n_dropped_tok} circuits during tokenization (likely out of range or NaN)")
+print(f"Total Test Set Clipping Events:")
+print(f"  - Beta coefficients clipped: {beta_clip_count}")
+print(f"  - Gamma coefficients clipped: {gamma_clip_count}")
+
 combined_res_tok_df[f'token_int_seq_round_d{rounding_digits}'] = (
     combined_res_tok_df[f'token_seq_round_d{rounding_digits}'].progress_apply(
         lambda x: [token_to_int_idx_dict[token] for token in x]
     )
 )
 
+# Print stats about sequence lengths
+all_token_seqs = combined_res_tok_df[f'token_int_seq_round_d{rounding_digits}']
+max_seq_len = all_token_seqs.apply(len).max()
+min_seq_len = all_token_seqs.apply(len).min()
+avg_seq_len = all_token_seqs.apply(len).mean()
+
+print(f"Sequence length stats:")
+print(f"\tMax sequence length: {max_seq_len}")
+print(f"\tMin sequence length: {min_seq_len}")
+print(f"\tAverage sequence length: {avg_seq_len:.2f}")
+
+if max_seq_len > max_block_size:
+    print(f"WARNING: Max sequence length ({max_seq_len}) exceeds max_block_size ({max_block_size}). Sequences will be truncated.")
+
 # Generating training split for nanoGPT
 
 print("Preparing training data...")
 
-n = len(combined_res_tok_df)
-
+# Shuffling the tokenized data to ensure diversity in training batches
 combined_res_tok_shf_df = (
     combined_res_tok_df
-        .sample(frac=1)
+        .sample(frac=1, random_state=42)
         .reset_index(drop=True)
 )
 
 print(f"combined_res_df shape: {combined_res_df.shape}")
 print(f"combined_res_tok_df shape: {combined_res_tok_df.shape}")
 print(f"combined_res_tok_shf_df shape: {combined_res_tok_shf_df.shape}")
-
-# Stratified split based on is_sat and formula_method
-from sklearn.model_selection import train_test_split
-    
-# Create a stratification key
-combined_res_tok_shf_df['stratify_key'] = combined_res_tok_shf_df['is_sat'].astype(str) + "_" + combined_res_tok_shf_df['formula_method']
-    
-train_idx, val_test_idx = train_test_split(
-    combined_res_tok_shf_df.index,
-    test_size=(val_frac + test_frac),
-    stratify=combined_res_tok_shf_df['stratify_key'],
-    random_state=42
-)
-    
-val_idx, test_idx = train_test_split(
-    val_test_idx, 
-    test_size=(test_frac / (val_frac + test_frac)), 
-    stratify=combined_res_tok_shf_df.loc[val_test_idx, 'stratify_key'],
-    random_state=42
-)
-    
-train_formula_ids_set = set(combined_res_tok_shf_df.loc[train_idx, 'formula_id'])
-val_formula_ids_set = set(combined_res_tok_shf_df.loc[val_idx, 'formula_id'])
-test_formula_ids_set = set(combined_res_tok_shf_df.loc[test_idx, 'formula_id'])
-
-assert len(train_formula_ids_set.intersection(val_formula_ids_set)) == 0
-assert len(train_formula_ids_set.intersection(test_formula_ids_set)) == 0
-assert len(val_formula_ids_set.intersection(test_formula_ids_set)) == 0
 
 def pad_with_zeros(seq, target_len):
     # Ensure it's exactly target_len
@@ -388,11 +430,6 @@ def sliding_window(numbers, min_block_size, max_block_size):
         ]
     ]
 
-
-# Assign the 'label' column based on the split
-combined_res_tok_shf_df['label'] = 'train'
-combined_res_tok_shf_df.loc[combined_res_tok_shf_df['formula_id'].isin(val_formula_ids_set), 'label'] = 'val'
-combined_res_tok_shf_df.loc[combined_res_tok_shf_df['formula_id'].isin(test_formula_ids_set), 'label'] = 'test'
 
 if apply_sliding_window:
     print('Applying sliding window...')
@@ -535,7 +572,7 @@ config_to_save_str = config_template_str.format(
     dataset=dataset_name,
     block_size=max_block_size,
     use_graph_emb=use_graph_emb,
-    eval_ar_locally="True", # Default to True for Colab-bound configs
+    eval_ar_locally="False", # TODO: remove this as this was previously used to run AR checks remotely on a local machine
     pool_type=pool_type,
     n_nodes=n_nodes,
     rounding_digits=rounding_digits,
@@ -546,4 +583,3 @@ with open(save_path.joinpath('train_adapt_gpt_config.py'), 'w') as f:
 
 print(f"Data is saved to: {str(save_path.absolute())}")
 print("Done!")
-

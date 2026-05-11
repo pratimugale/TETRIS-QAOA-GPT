@@ -91,6 +91,8 @@ function run_evaluation()
         e_adapt = adapt_gpt_out_dict["ADAPT_energy_round"]
         ar_actual = (n_clauses - e_adapt) / (n_clauses - e_gurobi)
 
+        # we do not deal with circuits having more than 900 clauses. 
+        # We can thus reasonably assume that if a circuit has an energy more than 900, it is invalid.
         valid_energies = filter(e -> e < 900, adapt_gpt_energies_list)
         n_total_circuits = length(adapt_gpt_energies_list)
         n_valid_circuits = length(valid_energies)

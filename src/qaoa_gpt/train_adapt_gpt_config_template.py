@@ -2,10 +2,10 @@
 # Based on https://github.com/karpathy/nanoGPT/blob/master/config/train_shakespeare_char.py
 
 out_dir = '{out_dir}'
-eval_interval = 10 # Number of iterations before validation
+eval_interval = 100 # Number of iterations before validation
 eval_iters = 2 # Number of batches to be evaluated from the validation set
 log_interval = 1 # don't print too too often
-eval_ar_every = 50 # how often we do heavy approx ratio evaluation (calling ADAPT.jl)
+eval_ar_every = 300 # how often we do heavy approx ratio evaluation (calling ADAPT.jl)
 num_samples = 5 # Number of samples to draw during training validation
 eval_ar_n_samples = 50 # Number of random stratified circuits evaluated in Julia per validation
 
@@ -14,8 +14,8 @@ always_save_checkpoint = False
 
 dataset = '{dataset}'
 data_dir = 'src/qaoa-gpt/dataset/{dataset}'
-gradient_accumulation_steps = 5
-batch_size = 512
+gradient_accumulation_steps = 8
+batch_size = 64
 block_size = {block_size} # currently 512 in prepare_circ.py
 
 # baby GPT model :)
