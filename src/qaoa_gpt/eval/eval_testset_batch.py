@@ -4,9 +4,9 @@ eval_testset_batch.py
 Runs the trained QAOA-GPT model on every instance in the test split,
 generates N_SAMPLES circuits per instance, evaluates them with ADAPT.jl,
 and reports:
-  - mean ± std of Best AR   (best circuit AR per formula)
-  - mean ± std of Avg AR    (average circuit AR per formula)
-  - mean ± std of Error Rate (fraction of invalid circuits per formula)
+  - mean +- std of Best AR   (best circuit AR per formula)
+  - mean +- std of Avg AR    (average circuit AR per formula)
+  - mean +- std of Error Rate (fraction of invalid circuits per formula)
 
 AR formula (matching training loop):
   AR = (n_clauses - qaoa_energy) / (n_clauses - gurobi_energy)
@@ -37,10 +37,18 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg') # Non-interactive backend for HPC
 
-# ── make nanoGPT importable ──────────────────────────────────────────────────
-sys.path.append('nanoGPT')
+# make nanoGPT and source directories importable
+script_dir = os.path.dirname(os.path.abspath(__file__))
+src_qaoa_gpt = os.path.abspath(os.path.join(script_dir, ".."))
+project_root = os.path.abspath(os.path.join(src_qaoa_gpt, "../..")) # Go up from src/qaoa-gpt to the repo root
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+sys.path.insert(0, src_qaoa_gpt)
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'nanoGPT'))
+
+from nanoGPT.utils import clean_circ
+
+# CLI
 parser = argparse.ArgumentParser()
 parser.add_argument('--checkpoint',  required=True,  help='Path to ckpt.pt')
 parser.add_argument('--data_dir',    required=True,  help='Dataset directory (n10, n12 …)')
@@ -53,13 +61,14 @@ parser.add_argument('--pool_type',   default='qaoa_mixer', help='ADAPT pool type
 parser.add_argument('--julia_script', default='src/qaoa-gpt/adapt_gpt_eval_energy.jl')
 parser.add_argument('--julia_threads', type=int, default=4)
 parser.add_argument('--out_dir',     default='tmp_eval', help='Scratch dir for JSON files')
+parser.add_argument('--batch_size',  type=int, default=16, help='Number of formulas per GPU batch')
 args = parser.parse_args()
 
 os.makedirs(args.out_dir, exist_ok=True)
 device      = args.device
 device_type = 'cuda' if 'cuda' in device else 'cpu'
 
-# ── Load meta ─────────────────────────────────────────────────────────────────
+# Load meta data
 print(f"\n[1/5] Loading metadata from {args.data_dir}")
 with open(os.path.join(args.data_dir, 'meta.pkl'), 'rb') as f:
     meta = pickle.load(f)
@@ -69,7 +78,7 @@ eos_id  = stoi['eos']
 pad_id  = stoi['pad']
 eof_id  = stoi['end_of_formula']
 
-# ── Load model ────────────────────────────────────────────────────────────────
+# Load model
 print(f"[2/5] Loading checkpoint from {args.checkpoint}")
 checkpoint  = torch.load(args.checkpoint, map_location=device)
 model_args  = checkpoint['model_args']
@@ -98,7 +107,7 @@ model.load_state_dict(state_dict, strict=False)
 model.to(device)
 model.eval()
 
-# ── Load test split ───────────────────────────────────────────────────────────
+# Load test split
 print(f"[3/5] Loading test split …")
 test_npy_path = os.path.join(args.data_dir, 'test.npy')
 if not os.path.exists(test_npy_path):
@@ -134,133 +143,154 @@ else:
     print(f"  WARNING: {opt_circ_path} not found. Speedup analysis will be skipped.")
     runtime_map = {}
 
-# ── Helper: clean circuit tokens for Julia ────────────────────────────────────
-def clean_circ(tokens):
-    cleaned = []
-    for t in tokens:
-        t_str = str(t)
-        if t_str in ['bos', 'eos', 'pad', 'end_of_formula']:
-            continue
-        if t_str == 'new_layer_p':
-            cleaned.append(t_str)
-        elif t_str.startswith('op_'):
-            try:
-                cleaned.append(int(t_str.split('_')[1]))
-            except Exception:
-                cleaned.append(t_str)
-        else:
-            try:
-                cleaned.append(float(t_str))
-            except Exception:
-                cleaned.append(t_str)
-    return cleaned
+# Generate circuits (Batch Inference Strategy)
+print(f"[4/5] Generating {args.n_samples} circuits for each of {len(idx_list)} test instances (Batch Size: {args.batch_size}) …")
 
-# ── Generate circuits for all test instances ──────────────────────────────────
-print(f"[4/5] Generating {args.n_samples} circuits for each of {len(idx_list)} test instances …")
+# First pass: Group instances by formula length
+len_buckets = {}
+for i in range(len(idx_list)):
+    x_raw = test_data[i, 0]
+    eof_idx = int(np.where(x_raw == eof_id)[0][0])
+    formula_tokens = x_raw[:eof_idx + 1] # shape (T,)
+    
+    L = len(formula_tokens)
+    if L not in len_buckets:
+        len_buckets[L] = []
+    len_buckets[L].append(i)
+
 all_samples = []
-
-# For Variance Analysis
-all_gt_gammas, all_gt_betas = [], []
-all_gpt_gammas, all_gpt_betas = [], []
-
 ptdtype = torch.bfloat16 if device_type == 'cuda' else torch.float32
 from contextlib import nullcontext
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
-for sample_i in tqdm(range(len(idx_list))):
-    x_raw    = test_data[sample_i, 0]
-    eof_idx  = int(np.where(x_raw == eof_id)[0][0])
-    formula_tokens = x_raw[:eof_idx + 1]
+pbar = tqdm(total=len(idx_list))
 
-    formula_idx = idx_list[sample_i]
-    formula_id  = emb_idx_to_id.get(formula_idx, formula_idx)
-
-    # ground-truth circuit (for Julia reference)
-    matching_rows = df[df['formula_id'] == formula_id]
-    if len(matching_rows) == 0:
-        continue
-    row = matching_rows.iloc[0]
-    full_target_seq = row['token_seq_round_d2']
-    gt_eof_idx      = full_target_seq.index('end_of_formula')
-    gt_circuit_raw  = full_target_seq[gt_eof_idx + 1:]
-
-    formula_type = 'balanced' if 'balanced' in str(row.get('filename', '')).lower() else 'random'
-
-    # generate N_SAMPLES circuits
-    q_circs = []
-    inf_times = []
-    for _ in range(args.n_samples):
-        t_inf_start = time.time()
+# Second pass: Iterate through buckets and process in batches
+for L, inst_indices in len_buckets.items():
+    # Process formulas in chunks of batch_size
+    for i in range(0, len(inst_indices), args.batch_size):
+        batch_inst_ids = inst_indices[i : i + args.batch_size]
+        B = len(batch_inst_ids)
         
-        # Load formula and graph embedding to GPU inside the timer
-        x_input = torch.tensor(formula_tokens.astype(np.int64),
-                                dtype=torch.long, device=device).unsqueeze(0)
+        # Prepare inputs: (B, L)
+        formula_batch = []
+        embedding_batch = []
+        instance_metadata = []
+        
+        for inst_idx in batch_inst_ids:
+            x_raw = test_data[inst_idx, 0]
+            formula_tokens = x_raw[:L] 
+            formula_batch.append(formula_tokens)
+            
+            formula_idx = idx_list[inst_idx]
+            formula_id  = emb_idx_to_id.get(formula_idx, formula_idx)
+            
+            # Lookup metadata
+            matching_rows = df[df['formula_id'] == formula_id]
+            if len(matching_rows) == 0:
+                print(f"Warning: No metadata found for formula {formula_id}")
+                continue
+            row = matching_rows.iloc[0]
+            
+            # Embeddings
+            if use_gemb:
+                emb_idx = formula_id_to_emb_idx.get(formula_id, formula_idx)
+                embedding_batch.append(graph_emb_np[emb_idx])
+            
+            instance_metadata.append(row)
+            
+        if not formula_batch: continue
+            
+        # Replicate for n_samples: (B * n_samples, L)
+        x_input = torch.tensor(np.array(formula_batch), dtype=torch.long, device=device)
+        x_input = x_input.repeat_interleave(args.n_samples, dim=0)
         
         if use_gemb:
-            emb_idx = formula_id_to_emb_idx.get(formula_id, formula_idx)
-            cur_graph_emb = torch.from_numpy(
-                graph_emb_np[emb_idx].astype(np.float32)
-            ).to(device).unsqueeze(0)
+            cur_graph_emb = torch.tensor(np.array(embedding_batch), dtype=torch.float32, device=device)
+            cur_graph_emb = cur_graph_emb.repeat_interleave(args.n_samples, dim=0)
             if device_type == 'cuda':
                 cur_graph_emb = cur_graph_emb.to(torch.bfloat16)
         else:
             cur_graph_emb = None
 
+        # Max context=context window set in model config, generate for remaining space
+        max_gen = model.config.block_size - L
+        
+        t_batch_start = time.time()
         with torch.no_grad():
             with ctx:
                 if use_gemb:
                     y_out = model.generate(
                         x_input, cur_graph_emb,
-                        max_new_tokens=150,
+                        max_new_tokens=max_gen,
                         temperature=args.temperature,
                         top_k=args.top_k,
-                        eos_id=eos_id,
+                        eos_id=eos_id
                     )
                 else:
                     y_out = model.generate(
-                        x_input, 150,
+                        x_input, 
+                        max_gen,
                         temperature=args.temperature,
                         top_k=args.top_k,
-                        eos_id=eos_id,
+                        eos_id=eos_id
                     )
+        t_batch_end = time.time()
+        total_batch_time = t_batch_end - t_batch_start
+        batch_latency = total_batch_time / B
+        time_per_circuit = total_batch_time / (B * args.n_samples)
+        
+        # Post-process: Extract and truncate
+        for b_idx in range(B):
+            row = instance_metadata[b_idx]
+            formula_id = row['formula_id']
+            formula_list = row['formula_list']
+            if isinstance(formula_list, str):
+                formula_list = ast.literal_eval(formula_list)
+            
+            formula_type = 'balanced' if 'balanced' in str(row.get('filename', '')).lower() else 'random'
+            adapt_runtime = runtime_map.get(str(row.get('filename', '')), 0.0)
+            
+            # Ground truth circuit
+            full_target_seq = row['token_seq_round_d2']
+            gt_eof_idx      = full_target_seq.index('end_of_formula')
+            gt_circuit_raw  = full_target_seq[gt_eof_idx + 1:]
+            
+            # Generated circuits
+            q_circs_batch = []
+            for s_idx in range(args.n_samples):
+                seq_idx = b_idx * args.n_samples + s_idx
+                
+                # Truncate at first EOS
+                generated_tokens_ids = y_out[seq_idx].tolist()[L:]
+                try:
+                    eos_index = generated_tokens_ids.index(eos_id)
+                    actual_gen_ids = generated_tokens_ids[:eos_index]
+                except ValueError:
+                    actual_gen_ids = generated_tokens_ids
+                
+                circuit_tokens = [str(itos[tid]) for tid in actual_gen_ids 
+                                 if tid != pad_id and tid != eos_id]
+                q_circs_batch.append(clean_circ(circuit_tokens))
+                
+            all_samples.append({
+                'graph_prefix':   f"TEST_{len(all_samples)}__{formula_id}",
+                'type':           formula_type,
+                'formula_jl':     formula_list,
+                'energy_gurobi':  float(row['ground_truth_energy']),
+                'adapt_circuit':  clean_circ(gt_circuit_raw),
+                'q_circuits':     q_circs_batch,
+                'inference_time': batch_latency,
+                'time_per_circuit': time_per_circuit,
+                'total_batch_time': total_batch_time,
+                'adapt_runtime':  adapt_runtime
+            })
+            
+        pbar.update(B)
 
-        generated_only  = y_out[0].tolist()[len(formula_tokens):]
-        t_inf_end = time.time()
-        inf_times.append(t_inf_end - t_inf_start)
+pbar.close()
 
-        circuit_tokens  = [str(itos[t]) for t in generated_only
-                           if t != pad_id and t != eos_id]
-        q_circs.append(clean_circ(circuit_tokens))
-
-    formula_list = row['formula_list']
-    if isinstance(formula_list, str):
-        formula_list = ast.literal_eval(formula_list)
-
-    # Variance Analysis Extraction
-    gt_clean = clean_circ(gt_circuit_raw)
-    all_gt_betas.extend([x for x in gt_clean[2::4] if isinstance(x, (int, float))])
-    all_gt_gammas.extend([x for x in gt_clean[3::4] if isinstance(x, (int, float))])
-    
-    for qc in q_circs:
-        all_gpt_betas.extend([x for x in qc[2::4] if isinstance(x, (int, float))])
-        all_gpt_gammas.extend([x for x in qc[3::4] if isinstance(x, (int, float))])
-
-    # Use the filename from the metadata to lookup runtime
-    filename = str(row.get('filename', ''))
-    adapt_runtime = runtime_map.get(filename, 0.0)
-
-    all_samples.append({
-        'graph_prefix':   f"TEST_{sample_i}__{formula_id}",
-        'type':           formula_type,
-        'formula_jl':     formula_list,
-        'energy_gurobi':  float(row['ground_truth_energy']),
-        'adapt_circuit':  clean_circ(gt_circuit_raw),
-        'q_circuits':     q_circs,
-        'inference_time': np.mean(inf_times), # Average across 5 samples
-        'adapt_runtime':  adapt_runtime
-    })
-
-# ── Write input JSON ──────────────────────────────────────────────────────────
+# Write input JSON
 in_json  = os.path.join(args.out_dir, 'testset_eval_input.json')
 out_json = os.path.join(args.out_dir, 'testset_eval_output.json')
 
@@ -268,7 +298,7 @@ with open(in_json, 'w') as f:
     json.dump(all_samples, f, indent=2)
 print(f"\nSaved {len(all_samples)} instances to {in_json}")
 
-# ── Call ADAPT.jl ─────────────────────────────────────────────────────────────
+# Call ADAPT.jl
 print(f"[5/5] Running ADAPT.jl evaluation (threads={args.julia_threads}) …")
 julia_cmd = [
     'julia',
@@ -283,7 +313,7 @@ julia_cmd = [
 print("  CMD:", ' '.join(julia_cmd))
 subprocess.run(julia_cmd, check=True)
 
-# ── Parse output and compute statistics ──────────────────────────────────────
+# Parse output and compute statistics
 print("\n=== Computing Final Statistics ===")
 with open(out_json) as f:
     results = json.load(f)
@@ -317,13 +347,17 @@ print(f"{'Error Rate (per formula)':<30} {error_rates.mean():>10.4f} {error_rate
 
 # Speedup stats
 inference_times = np.array([e.get('inference_time', 0.0) for e in all_samples])
+circuit_times   = np.array([e.get('time_per_circuit', 0.0) for e in all_samples])
 adapt_runtimes  = np.array([e.get('adapt_runtime', 0.0) for e in all_samples])
 
 avg_inf   = inference_times.mean()
+avg_circ  = circuit_times.mean()
 avg_adapt = adapt_runtimes.mean()
 speedup   = avg_adapt / avg_inf if avg_inf > 0 else 0
+
 print()
-print(f"{'Avg Inference Time':<30} {avg_inf:>10.4f}s")
+print(f"{'Avg Inf. Time (per formula)':<30} {avg_inf:>10.4f}s")
+print(f"{'Avg Inf. Time (per circuit)':<30} {avg_circ:>10.4f}s")
 print(f"{'Avg ADAPT Runtime':<30} {avg_adapt:>10.4f}s")
 print(f"{'Speedup Factor':<30} {speedup:>10.1f}x")
 
@@ -336,37 +370,11 @@ summary_df   = pd.DataFrame({
     'avg_ar':     avg_ars,
     'error_rate': error_rates,
     'ar_adapt':   [e['result_quality'].get('ar_qaoa_actual', 0) for e in results],
-    'inference_time': inference_times,
+    'inference_time_per_formula': inference_times,
+    'inference_time_per_circuit': circuit_times,
     'adapt_runtime':  adapt_runtimes,
 })
 summary_df.to_csv(summary_path, index=False)
 print(f"\nPer-formula results saved to {summary_path}")
 print(f"Full Julia output saved to   {out_json}")
 
-# ── Parameter Variance Plotting ───────────────────────────────────────────────
-if all_gt_gammas and all_gpt_gammas:
-    print("\n[Plotting] Generating parameter distribution comparison …")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    
-    # Gamma distribution
-    axes[0].boxplot([all_gt_gammas, all_gpt_gammas], labels=['Ground Truth', 'QAOA-GPT'])
-    axes[0].set_title('Gamma Coefficients (γ)')
-    axes[0].grid(True, alpha=0.3)
-    
-    # Beta distribution
-    axes[1].boxplot([all_gt_betas, all_gpt_betas], labels=['Ground Truth', 'QAOA-GPT'])
-    axes[1].set_title('Beta Coefficients (β)')
-    axes[1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plot_path = os.path.join(args.out_dir, 'parameter_distributions.png')
-    plt.savefig(plot_path, dpi=200)
-    print(f"Plot saved to {plot_path}")
-
-    # Print distribution stats
-    print(f"\n{'Parameter':<15} {'Source':<15} {'Mean':>10} {'Std':>10}")
-    print("-" * 52)
-    print(f"{'Gamma (γ)':<15} {'Ground Truth':<15} {np.mean(all_gt_gammas):>10.4f} {np.std(all_gt_gammas):>10.4f}")
-    print(f"{'Gamma (γ)':<15} {'QAOA-GPT':<15} {np.mean(all_gpt_gammas):>10.4f} {np.std(all_gpt_gammas):>10.4f}")
-    print(f"{'Beta  (β)':<15} {'Ground Truth':<15} {np.mean(all_gt_betas):>10.4f} {np.std(all_gt_betas):>10.4f}")
-    print(f"{'Beta  (β)':<15} {'QAOA-GPT':<15} {np.mean(all_gpt_betas):>10.4f} {np.std(all_gpt_betas):>10.4f}")
