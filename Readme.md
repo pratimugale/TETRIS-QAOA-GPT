@@ -1,6 +1,6 @@
 # Q3SAT-GPT
 
-This repo contains code for Q3SAT-GPT. It built on top of a fork of the original QAOA-GPT repo: [QAOA-GPT](https://github.com/IlyaTyagin/ADAPT-GPT).
+This repo contains code for Q3SAT-GPT. It built on top of a fork of the original QAOA-GPT repo: [QAOA-GPT](https://github.com/IlyaTyagin/ADAPT-GPT). Please note that some code is still being added - from discrete sources and put all together in this repo. It will be added as soon as possible. Thank you.
 
 ## Quick Start Guide
 
